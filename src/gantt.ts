@@ -27,20 +27,17 @@
 import "./../style/gantt.less";
 
 import "d3-transition";
-import { BaseType, select as d3Select, selectAll as d3SelectAll, Selection as d3Selection } from "d3-selection";
+import { BaseType, select as d3Select, Selection as d3Selection } from "d3-selection";
 import { ScaleTime as d3TimeScale } from "d3-scale";
 import {
     timeDay as d3TimeDay,
     timeHour as d3TimeHour,
     timeMinute as d3TimeMinute,
-    timeSecond as d3TimeSecond,
-    timeWeek as d3TimeWeek,
-    timeMonth as d3TimeMonth,
-    timeYear as d3TimeYear,
-    timeQuarter as d3TimeQuarter
+    timeSecond as d3TimeSecond
 } from "d3-time";
 import { nest as d3Nest } from "d3-collection";
 import { drag as d3Drag, D3DragEvent, SubjectPosition as d3SubjectPosition } from "d3-drag";
+
 
 //lodash
 import lodashIsEmpty from "lodash.isempty";
@@ -202,10 +199,6 @@ const GanttDurationUnitType = [
     DurationUnit.Day,
 ];
 
-// ─── Multi-level axis constants ───────────────────────────────────────────────
-const AxisLevelHeight: number = 22;
-const MaxAxisLevels: number = 3;
-
 export class SortingOptions {
     isCustomSortingNeeded: boolean;
     sortingDirection: SortDirection;
@@ -237,13 +230,6 @@ interface CreateTasksDto {
     sortingOptions: SortingOptions;
 }
 
-// ─── Zoom state ───────────────────────────────────────────────────────────────
-interface ZoomState {
-    startDate: Date;
-    endDate: Date;
-    zoomFactor: number;
-}
-
 export class Gantt implements IVisual {
     private static ClassName: ClassAndSelector = createClassAndSelector("gantt");
     private static Chart: ClassAndSelector = createClassAndSelector("chart");
@@ -273,16 +259,6 @@ export class Gantt implements IVisual {
     private static LegendItems: ClassAndSelector = createClassAndSelector("legendItem");
     private static LegendTitle: ClassAndSelector = createClassAndSelector("legendTitle");
     private static ClickableArea: ClassAndSelector = createClassAndSelector("clickableArea");
-    // ─── New selectors ────────────────────────────────────────────────────────
-    private static DataGridHeader: ClassAndSelector = createClassAndSelector("data-grid-header");
-    private static DataGridCell: ClassAndSelector = createClassAndSelector("data-grid-cell");
-    private static RowSelectionBg: ClassAndSelector = createClassAndSelector("row-selection-bg");
-    private static TaskPlannedRect: ClassAndSelector = createClassAndSelector("task-planned-rect");
-    private static DependencyLines: ClassAndSelector = createClassAndSelector("dependency-lines");
-    private static ZoomControls: ClassAndSelector = createClassAndSelector("zoom-controls");
-    private static ReferenceBands: ClassAndSelector = createClassAndSelector("reference-bands");
-    private static ReferenceLines: ClassAndSelector = createClassAndSelector("reference-lines");
-    private static MultiAxisLevel: ClassAndSelector = createClassAndSelector("multi-axis-level");
 
     private viewport: IViewport;
     private colors: IColorPalette;
@@ -333,6 +309,7 @@ export class Gantt implements IVisual {
     private static AxisBackgroundLeftShift: number = 18;
     private static CollapseAllLeftShift: number = 15;
     private static CollapseAllFontAdditionalSize: number = 3;
+    // It' used to hide right border of the task-lines rect
     private static CollapseAllBackgroundWidthPadding: number = 4;
     private static BarHeightMargin: number = 5;
     private static ChartLineHeightDivider: number = 4;
@@ -356,12 +333,6 @@ export class Gantt implements IVisual {
 
     private static TimeScale: d3TimeScale<any, any>;
     private xAxisProperties: IAxisProperties;
-
-    // ─── Data grid extra columns width ────────────────────────────────────────
-    private dataGridExtraWidth: number = 0;
-
-    // ─── Zoom state ───────────────────────────────────────────────────────────
-    private zoomState: ZoomState = null;
 
     private static get DefaultMargin(): IMargin {
         return {
@@ -411,13 +382,6 @@ export class Gantt implements IVisual {
     private sortingOptions: SortingOptions;
     private settingsService: SettingsService;
 
-    // ─── New groups for added features ────────────────────────────────────────
-    private dependencyGroup: d3Selection<SVGGElement, null, null, undefined>;
-    private referenceBandGroup: d3Selection<SVGGElement, null, null, undefined>;
-    private referenceLineGroup: d3Selection<SVGGElement, null, null, undefined>;
-    private zoomControlGroup: d3Selection<SVGGElement, null, null, undefined>;
-    private multiAxisGroup: d3Selection<SVGGElement, null, null, undefined>;
-
     constructor(options: VisualConstructorOptions) {
         this.init(options);
     }
@@ -438,15 +402,16 @@ export class Gantt implements IVisual {
         this.createViewport(options.element);
     }
 
-    // =========================================================================
-    // VIEWPORT
-    // =========================================================================
-
+    /**
+     * Create the viewport area of the gantt chart
+     */
     private createViewport(element: HTMLElement): void {
+        // create div container to the whole viewport area
         this.ganttDiv = this.body
             .append("div")
             .classed(Gantt.Body.className, true);
 
+        // create container to the svg area
         this.ganttSvg = this.ganttDiv
             .append("svg")
             .classed(Gantt.ClassName.className, true)
@@ -458,37 +423,26 @@ export class Gantt implements IVisual {
             .attr("height", "100%")
             .attr("width", "100%");
 
-        // Reference bands (behind everything)
-        this.referenceBandGroup = this.ganttSvg
-            .append("g")
-            .classed(Gantt.ReferenceBands.className, true);
-
+        // create chart container
         this.chartGroup = this.ganttSvg
             .append("g")
             .classed(Gantt.Chart.className, true);
 
-        // Dependency connector lines (above bars)
-        this.dependencyGroup = this.chartGroup
+        // create task lines container after chart container
+        this.lineGroup = this.ganttSvg
             .append("g")
-            .classed(Gantt.DependencyLines.className, true);
+            .classed(Gantt.TaskLines.className, true)
+            .attr("height", 20);
 
-        // Reference vertical lines (above bars)
-        this.referenceLineGroup = this.ganttSvg
-            .append("g")
-            .classed(Gantt.ReferenceLines.className, true);
-
+        // create tasks container
         this.taskGroup = this.chartGroup
             .append("g")
             .classed(Gantt.Tasks.className, true);
 
+        // create axis container
         this.axisGroup = this.ganttSvg
             .append("g")
             .classed(Gantt.AxisGroup.className, true);
-
-        // Multi-level axis overlay
-        this.multiAxisGroup = this.ganttSvg
-            .append("g")
-            .classed(Gantt.MultiAxisLevel.className, true);
 
         this.collapseAllGroup = this.ganttSvg
             .append("g")
@@ -502,18 +456,14 @@ export class Gantt implements IVisual {
             .attr("height", Gantt.AxisBackgroundHeight)
             .attr("transform", SVGManipulations.translate(-Gantt.AxisBackgroundLeftShift, -Gantt.TaskLabelsMarginTop));
 
-        this.lineGroup = this.ganttSvg
-            .append("g")
-            .classed(Gantt.TaskLines.className, true)
-            .attr("height", 20);
-
         this.lineGroupWrapper = this.lineGroup
             .append("rect")
             .classed(Gantt.TaskLinesRect.className, true)
             .attr("height", 0)
             .attr("width", 0)
-            .attr("y", this.margin.top);
+            .attr("y", this.margin.top)
 
+        // Used to make right border a little thicker and draggable
         this.lineGroupWrapperRightBorder = this.lineGroup
             .append("rect")
             .classed(Gantt.TaskLinesRectRightLine.className, true)
@@ -533,11 +483,7 @@ export class Gantt implements IVisual {
             .attr("y", this.margin.top)
             .attr("fill", this.colorHelper.getHighContrastColor("foreground", Gantt.DefaultValues.TaskLineColor));
 
-        // Zoom controls
-        this.zoomControlGroup = this.ganttSvg
-            .append("g")
-            .classed(Gantt.ZoomControls.className, true);
-
+        // create legend container
         this.legend = createLegend(
             element,
             false,
@@ -548,7 +494,7 @@ export class Gantt implements IVisual {
                 const taskLabelSetting = this.formattingSettings.taskLabels;
                 const taskLabelShow: boolean = taskLabelSetting.show.value;
                 const taskLabelsWidth: number = taskLabelShow
-                    ? taskLabelSetting.taskLabelsGroup.general.width.value + this.dataGridExtraWidth
+                    ? taskLabelSetting.taskLabelsGroup.general.width.value
                     : 0;
 
                 const scrollTop: number = <number>event.target.scrollTop;
@@ -556,14 +502,14 @@ export class Gantt implements IVisual {
 
                 const axisTranslateX: number = taskLabelsWidth + this.margin.left + Gantt.SubtasksLeftMargin + (taskLabelShow ? 0 : Gantt.GroupLabelSize);
                 this.axisGroup.attr("transform", SVGManipulations.translate(axisTranslateX, scrollTop + Gantt.TaskLabelsMarginTop));
-                this.multiAxisGroup.attr("transform", SVGManipulations.translate(axisTranslateX, scrollTop));
-                this.lineGroup.attr("transform", SVGManipulations.translate(scrollLeft, 0));
+                this.lineGroup.attr("transform", SVGManipulations.translate(scrollLeft, 0))
                 this.collapseAllGroup.attr("transform", SVGManipulations.translate(scrollLeft, scrollTop));
             }
         }, false);
     }
 
     private handleTaskLabelResize() {
+        // eslint-disable-next-line @typescript-eslint/no-this-alias
         const self = this;
         this.lineGroupWrapperRightBorder
             .each(function () {
@@ -590,16 +536,20 @@ export class Gantt implements IVisual {
                         .attr("height", (_, i, nodes) => {
                             const element = nodes[i];
                             const y = parseFloat(element.getAttribute("y")) || 0;
-                            return ganttSVG.clientHeight - y;
+                            const newHeight = ganttSVG.clientHeight - y;
+                            return newHeight;
                         });
 
+                    // update x
                     d3Select(this).attr("x", newWidth.toString());
 
+                    // Update clipping for collapse/expand all button
                     const collapseLabel = self.collapseAllGroup.select(`text`);
                     const text: string = self.collapsedTasks.length ? self.localizationManager.getDisplayName("Visual_Expand_All") : self.localizationManager.getDisplayName("Visual_Collapse_All");
                     collapseLabel.text(text);
                     collapseLabel.call(AxisHelper.LabelLayoutStrategy.clip, newWidth - Gantt.GroupLabelSize - Gantt.CollapseAllBackgroundWidthPadding, textMeasurementService.svgEllipsis);
 
+                    // Update clipping for task labels
                     const taskLabelTextElements = self.lineGroup.selectAll<SVGTextElement, GroupedTask>(`.${Gantt.Label.className} .${Gantt.ClickableArea.className} text`);
                     taskLabelTextElements.text((task: GroupedTask) => task.name);
                     taskLabelTextElements.call(AxisHelper.LabelLayoutStrategy.clip, newWidth - Gantt.AxisLabelClip, textMeasurementService.svgEllipsis);
@@ -607,7 +557,6 @@ export class Gantt implements IVisual {
                     const translateX: number = newWidth + self.margin.left + Gantt.SubtasksLeftMargin;
                     const scrollTop: number = ganttDiv.scrollTop;
                     self.axisGroup.attr("transform", SVGManipulations.translate(translateX, Gantt.TaskLabelsMarginTop + scrollTop));
-                    self.multiAxisGroup.attr("transform", SVGManipulations.translate(translateX, scrollTop));
                     self.chartGroup.attr("transform", SVGManipulations.translate(translateX, self.margin.top));
                     self.collapseAllBackground.attr("width", newWidth + Gantt.CollapseAllBackgroundWidthPadding);
                 })
@@ -620,50 +569,95 @@ export class Gantt implements IVisual {
                         merge: [{
                             objectName: "taskLabels",
                             selector: null,
-                            properties: { width: newWidth }
+                            properties: {
+                                width: newWidth
+                            }
                         }]
                     });
                 })
             );
     }
 
+    /**
+     * Clear the viewport area
+     */
     private clearViewport(): void {
         this.ganttDiv
             .style("height", 0)
             .style("width", 0);
 
-        this.body.selectAll(Gantt.LegendItems.selectorName).remove();
-        this.body.selectAll(Gantt.LegendTitle.selectorName).remove();
-        this.axisGroup.selectAll(Gantt.AxisTick.selectorName).remove();
-        this.axisGroup.selectAll(Gantt.Domain.selectorName).remove();
-        this.collapseAllGroup.selectAll(Gantt.CollapseAll.selectorName).remove();
-        this.collapseAllGroup.selectAll(Gantt.CollapseAllArrow.selectorName).remove();
-        this.lineGroup.selectAll(Gantt.TaskLabels.selectorName).remove();
-        this.lineGroup.selectAll(Gantt.Label.selectorName).remove();
-        this.chartGroup.selectAll(Gantt.ChartLine.selectorName).remove();
-        this.chartGroup.selectAll(Gantt.TaskGroup.selectorName).remove();
-        this.chartGroup.selectAll(Gantt.SingleTask.selectorName).remove();
-        this.multiAxisGroup.selectAll("*").remove();
-        this.dependencyGroup.selectAll("*").remove();
-        this.referenceBandGroup.selectAll("*").remove();
-        this.referenceLineGroup.selectAll("*").remove();
-        this.zoomControlGroup.selectAll("*").remove();
+        this.body
+            .selectAll(Gantt.LegendItems.selectorName)
+            .remove();
+
+        this.body
+            .selectAll(Gantt.LegendTitle.selectorName)
+            .remove();
+
+        this.axisGroup
+            .selectAll(Gantt.AxisTick.selectorName)
+            .remove();
+
+        this.axisGroup
+            .selectAll(Gantt.Domain.selectorName)
+            .remove();
+
+        this.collapseAllGroup
+            .selectAll(Gantt.CollapseAll.selectorName)
+            .remove();
+
+        this.collapseAllGroup
+            .selectAll(Gantt.CollapseAllArrow.selectorName)
+            .remove();
+
+        this.lineGroup
+            .selectAll(Gantt.TaskLabels.selectorName)
+            .remove();
+
+        this.lineGroup
+            .selectAll(Gantt.Label.selectorName)
+            .remove();
+
+        this.chartGroup
+            .selectAll(Gantt.ChartLine.selectorName)
+            .remove();
+
+        this.chartGroup
+            .selectAll(Gantt.TaskGroup.selectorName)
+            .remove();
+
+        this.chartGroup
+            .selectAll(Gantt.SingleTask.selectorName)
+            .remove();
     }
 
+    /**
+     * Update div container size to the whole viewport area
+     */
     private updateChartSize(): void {
         this.ganttDiv
             .style("height", PixelConverter.toString(this.viewport.height))
             .style("width", PixelConverter.toString(this.viewport.width));
     }
 
-    // =========================================================================
-    // STATIC HELPERS
-    // =========================================================================
-
+    /**
+     * Check if dataView has a given role
+     * @param column The dataView headers
+     * @param name The role to find
+     */
     private static hasRole(column: DataViewMetadataColumn, name: string) {
         return column.roles && column.roles[name];
     }
 
+    /**
+     * Get the tooltip info (data display names & formatted values)
+     * @param task All task attributes.
+     * @param formatters Formatting options for gantt attributes.
+     * @param durationUnit Duration unit option
+     * @param localizationManager powerbi localization manager
+     * @param isEndDateFilled if end date is filled
+     * @param roleLegendText customized legend name
+     */
     public static getTooltipInfo({
         task,
         formatters,
@@ -684,34 +678,47 @@ export class Gantt implements IVisual {
 
         const tooltipDataArray: VisualTooltipDataItem[] = [];
 
+        // Helper function to get custom display name or default
         const getDisplayName = (customName: string, defaultKey: string): string => {
             return (customName && customName.trim()) || localizationManager.getDisplayName(defaultKey);
         };
 
         if (task.taskType && (!tooltipSettings || tooltipSettings.showLegend.value)) {
             tooltipDataArray.push({
-                displayName: roleLegendText || getDisplayName(tooltipSettings?.legendDisplayName?.value, "Role_Legend"),
+                displayName: roleLegendText || getDisplayName(
+                    tooltipSettings?.legendDisplayName?.value,
+                    "Role_Legend"
+                ),
                 value: task.taskType
             });
         }
 
         if (!tooltipSettings || tooltipSettings.showTask.value) {
             tooltipDataArray.push({
-                displayName: getDisplayName(tooltipSettings?.taskDisplayName?.value, "Role_Task"),
+                displayName: getDisplayName(
+                    tooltipSettings?.taskDisplayName?.value,
+                    "Role_Task"
+                ),
                 value: task.name
             });
         }
 
         if (task.start && !isNaN(task.start.getDate()) && (!tooltipSettings || tooltipSettings.showStartDate.value)) {
             tooltipDataArray.push({
-                displayName: getDisplayName(tooltipSettings?.startDateDisplayName?.value, "Role_StartDate"),
+                displayName: getDisplayName(
+                    tooltipSettings?.startDateDisplayName?.value,
+                    "Role_StartDate"
+                ),
                 value: formatters.startDateFormatter.format(task.start)
             });
         }
 
         if (lodashIsEmpty(task.Milestones) && task.end && !isNaN(task.end.getDate()) && (!tooltipSettings || tooltipSettings.showEndDate.value)) {
             tooltipDataArray.push({
-                displayName: getDisplayName(tooltipSettings?.endDateDisplayName?.value, "Role_EndDate"),
+                displayName: getDisplayName(
+                    tooltipSettings?.endDateDisplayName?.value,
+                    "Role_EndDate"
+                ),
                 value: formatters.startDateFormatter.format(task.end)
             });
         }
@@ -719,21 +726,30 @@ export class Gantt implements IVisual {
         if (lodashIsEmpty(task.Milestones) && task.duration && !isEndDateFilled && (!tooltipSettings || tooltipSettings.showDuration.value)) {
             const durationLabel: string = DurationHelper.generateLabelForDuration(task.duration, durationUnit, localizationManager);
             tooltipDataArray.push({
-                displayName: getDisplayName(tooltipSettings?.durationDisplayName?.value, "Role_Duration"),
+                displayName: getDisplayName(
+                    tooltipSettings?.durationDisplayName?.value,
+                    "Role_Duration"
+                ),
                 value: durationLabel
             });
         }
 
         if (task.completion && (!tooltipSettings || tooltipSettings.showCompletion.value)) {
             tooltipDataArray.push({
-                displayName: getDisplayName(tooltipSettings?.completionDisplayName?.value, "Role_Completion"),
+                displayName: getDisplayName(
+                    tooltipSettings?.completionDisplayName?.value,
+                    "Role_Completion"
+                ),
                 value: formatters.completionFormatter.format(task.completion)
             });
         }
 
         if (task.resource && (!tooltipSettings || tooltipSettings.showResource.value)) {
             tooltipDataArray.push({
-                displayName: getDisplayName(tooltipSettings?.resourceDisplayName?.value, "Role_Resource"),
+                displayName: getDisplayName(
+                    tooltipSettings?.resourceDisplayName?.value,
+                    "Role_Resource"
+                ),
                 value: task.resource
             });
         }
@@ -747,12 +763,15 @@ export class Gantt implements IVisual {
                 if (typeof tooltip.value === "string") {
                     return tooltip;
                 }
+
                 const value: any = tooltip.value;
+
                 if (isNaN(Date.parse(value)) || typeof value === "number") {
                     tooltip.value = value.toString();
                 } else {
                     tooltip.value = formatters.startDateFormatter.format(value);
                 }
+
                 return tooltip;
             })
             .forEach(tooltip => tooltipDataArray.push(tooltip));
@@ -764,6 +783,10 @@ export class Gantt implements IVisual {
         return tooltipDataArray;
     }
 
+    /**
+    * Check if task has data for task
+    * @param dataView
+    */
     private static isChartHasTask(dataView: DataView): boolean {
         if (dataView?.metadata?.columns) {
             for (const column of dataView.metadata.columns) {
@@ -772,9 +795,16 @@ export class Gantt implements IVisual {
                 }
             }
         }
+
         return false;
     }
 
+    /**
+     * Returns the chart formatters
+     * @param dataView The data Model
+     * @param settings visual settings
+     * @param cultureSelector The current user culture
+     */
     private getFormatters(dataView: DataView, cultureSelector: string): GanttChartFormatters {
         if (!dataView?.metadata?.columns) {
             return null;
@@ -787,6 +817,7 @@ export class Gantt implements IVisual {
             }
         }
 
+        // Priority of using date format: Format from dvColumn -> Format by culture selector -> Custom Format
         if (cultureSelector) {
             dateFormat = null;
         }
@@ -797,6 +828,7 @@ export class Gantt implements IVisual {
 
         if (this.formattingSettings.tooltipConfig.dateFormat &&
             this.formattingSettings.tooltipConfig.dateFormat.value !== dateFormat) {
+
             dateFormat = this.formattingSettings.tooltipConfig.dateFormat.value;
         }
 
@@ -806,11 +838,10 @@ export class Gantt implements IVisual {
         };
     }
 
-    // =========================================================================
-    // LEGEND
-    // =========================================================================
+    private createLegend(
+        legendTypes: LegendType,
+        useDefaultColor: boolean): LegendData {
 
-    private createLegend(legendTypes: LegendType, useDefaultColor: boolean): LegendData {
         const colorHelper = new ColorHelper(this.colors, LegendPropertyIdentifier);
         const legendSettings = this.formattingSettings.legend.general;
         const legendData: LegendData = {
@@ -827,9 +858,11 @@ export class Gantt implements IVisual {
         legendData.dataPoints = legendTypes?.types.map(
             (typeMeta: LegendGroup): LegendDataPoint => {
                 let color: string = this.formattingSettings.taskConfig.fill.value.value;
+
                 if (!useDefaultColor && !colorHelper.isHighContrast) {
                     color = colorHelper.getColorForMeasure(typeMeta.columnGroup.objects, typeMeta.legendName);
                 }
+
                 return {
                     label: typeMeta.legendName?.toString(),
                     color: color,
@@ -845,22 +878,30 @@ export class Gantt implements IVisual {
 
     private static getSortingOptions(dataView: DataView): SortingOptions {
         const sortingOption: SortingOptions = new SortingOptions();
+
         dataView.metadata.columns.forEach(column => {
             if (column.roles && column.sort && (column.roles[ParentColumnName] || column.roles[TaskColumnName])) {
                 sortingOption.isCustomSortingNeeded = true;
                 sortingOption.sortingDirection = column.sort;
+
                 return sortingOption;
             }
         });
+
         return sortingOption;
     }
 
     private static getMinDurationUnitInMilliseconds(durationUnit: DurationUnit): number {
         switch (durationUnit) {
-            case DurationUnit.Hour: return MillisecondsInAHour;
-            case DurationUnit.Minute: return MillisecondsInAMinute;
-            case DurationUnit.Second: return MillisecondsInASecond;
-            default: return MillisecondsInADay;
+            case DurationUnit.Hour:
+                return MillisecondsInAHour;
+            case DurationUnit.Minute:
+                return MillisecondsInAMinute;
+            case DurationUnit.Second:
+                return MillisecondsInASecond;
+
+            default:
+                return MillisecondsInADay;
         }
     }
 
@@ -871,12 +912,10 @@ export class Gantt implements IVisual {
                 milestonesWithoutDuplicates[milestone.name] = milestone;
             }
         });
+
         return milestonesWithoutDuplicates;
     }
 
-    // =========================================================================
-    // MILESTONES DATA
-    // =========================================================================
 
     private static createMilestones(
         dataView: DataView,
@@ -884,7 +923,6 @@ export class Gantt implements IVisual {
         viewMode: powerbi.ViewMode,
         settingsState: SettingsState,
         keepSettingsOnFiltering: boolean): MilestoneData {
-
         let milestonesIndex = -1;
         for (const index in dataView.categorical.categories) {
             const category = dataView.categorical.categories[index];
@@ -893,15 +931,18 @@ export class Gantt implements IVisual {
             }
         }
 
-        const milestoneData: MilestoneData = { dataPoints: [] };
+        const milestoneData: MilestoneData = {
+            dataPoints: []
+        };
         const milestonesCategory = dataView.categorical.categories[milestonesIndex];
         const milestones: { value: PrimitiveValue, index: number }[] = [];
         const shouldUseSettingsFromPersistProps: boolean = viewMode === powerbi.ViewMode.View || keepSettingsOnFiltering;
+
         const cachedShapes: { [key: string]: MilestoneShape } = {};
         const cachedColors: { [key: string]: string } = {};
         const allShapes = [MilestoneShape.Circle, MilestoneShape.Square, MilestoneShape.Rhombus];
-        let prevShapeIndex = -1;
 
+        let prevShapeIndex = -1;
         if (milestonesCategory && milestonesCategory.values) {
             milestonesCategory.values.forEach((value: PrimitiveValue, index: number) => milestones.push({ value, index }));
             milestones.forEach((milestone) => {
@@ -917,13 +958,12 @@ export class Gantt implements IVisual {
                 if (!cachedShapes[value]) {
                     const savedShape = settingsState.getMilestoneSettings(value)?.milestones?.shapeType as (MilestoneShape | undefined);
                     cachedShapes[value] = savedShape ?? allShapes[(prevShapeIndex + 1) % allShapes.length];
-                    prevShapeIndex++;
+                    prevShapeIndex++
                 }
                 if (!cachedColors[value]) {
                     const savedColor = (settingsState.getMilestoneSettings(value)?.milestones as any)?.fill?.solid?.color;
                     cachedColors[value] = savedColor ?? host.colorPalette.getColor(value).value;
                 }
-
                 const milestoneDataPoint: MilestoneDataPoint = {
                     name: value,
                     identity: selectionBuilder.createSelectionId(),
@@ -934,32 +974,56 @@ export class Gantt implements IVisual {
                 };
                 milestoneData.dataPoints.push(milestoneDataPoint);
             });
+
         }
 
         return milestoneData;
     }
 
-    // =========================================================================
-    // TASKS CREATION
-    // =========================================================================
-
+    /**
+     * Create task objects dataView
+     * @param dataView The data Model.
+     * @param formatters task attributes represented format.
+     * @param taskColor Color of task
+     * @param settings settings of visual
+     * @param colors colors of groped tasks
+     * @param host Host object
+     * @param taskTypes
+     * @param localizationManager powerbi localization manager
+     * @param isEndDateFilled
+     * @param hasHighlights if any of the tasks has highlights
+     */
     private createTasks(createTasksDto: CreateTasksDto): Task[] {
-        const { dataView, taskTypes, formatters, isEndDateFilled, hasHighlights, sortingOptions } = createTasksDto;
-        let { taskColor } = createTasksDto;
+        const {
+            dataView,
+            taskTypes,
+            formatters,
+            isEndDateFilled,
+            hasHighlights,
+            sortingOptions
+        } = createTasksDto;
+
+        let { taskColor } = createTasksDto
 
         const categoricalValues: DataViewValueColumns = dataView?.categorical?.values;
+
         let tasks: Task[] = [];
         const addedParents: string[] = [];
         taskColor = taskColor || Gantt.DefaultValues.TaskColor;
 
         const values: GanttColumns<any> = GanttColumns.getCategoricalValues(dataView);
-        if (!values.Task) { return tasks; }
+
+        if (!values.Task) {
+            return tasks;
+        }
 
         const colorHelper: ColorHelper = new ColorHelper(this.colors, LegendPropertyIdentifier);
         const groupValues: GanttColumns<DataViewValueColumn>[] = GanttColumns.getGroupedValueColumns(dataView);
+
         const collapsedTasks: string[] = JSON.parse(this.formattingSettings.collapsedTasks.list.value);
         let durationUnit: DurationUnit = <DurationUnit>this.formattingSettings.general.durationUnit.value.value.toString();
         let duration: number = this.formattingSettings.general.durationMin.value;
+
         let endDate: Date = null;
 
         const taskCategory = dataView.categorical.categories.find(category => Gantt.hasRole(category.source, GanttRole.Task));
@@ -977,17 +1041,43 @@ export class Gantt implements IVisual {
             endDate = taskGroupAttributes.endDate;
 
             const taskCreationDetails: CreateTaskDto = {
-                values, index, hasHighlights, categoricalValues,
-                color, completion, categoryValue, endDate, duration, taskType,
-                selectionBuilder, wasDowngradeDurationUnit, stepDurationTransformation,
+                values,
+                index,
+                hasHighlights,
+                categoricalValues,
+                color,
+                completion,
+                categoryValue,
+                endDate,
+                duration,
+                taskType,
+                selectionBuilder,
+                wasDowngradeDurationUnit,
+                stepDurationTransformation,
             };
 
-            const { taskParentName, milestone, startDate, extraInformation, highlight, task } = this.createTask(taskCreationDetails);
+            const {
+                taskParentName,
+                milestone,
+                startDate,
+                extraInformation,
+                highlight,
+                task
+            } = this.createTask(taskCreationDetails);
 
             if (taskParentName) {
                 Gantt.addTaskToParentTask(
-                    categoryValue, task, tasks, taskParentName, addedParents, collapsedTasks,
-                    milestone, startDate, highlight, extraInformation, selectionBuilder,
+                    categoryValue,
+                    task,
+                    tasks,
+                    taskParentName,
+                    addedParents,
+                    collapsedTasks,
+                    milestone,
+                    startDate,
+                    highlight,
+                    extraInformation,
+                    selectionBuilder,
                 );
             }
 
@@ -1008,14 +1098,15 @@ export class Gantt implements IVisual {
 
     private updateTaskDetails(tasks: Task[], durationUnit: DurationUnit, duration: number, dataView: powerbi.DataView, collapsedTasks: string[]) {
         tasks.forEach(task => {
-            if (task.children && task.children.length) { return; }
+            if (task.children && task.children.length) {
+                return;
+            }
 
             if (task.end && task.start && isValidDate(task.end)) {
-                const durationInMilliseconds: number = task.end.getTime() - task.start.getTime();
-                const minDurationUnitInMilliseconds: number = Gantt.getMinDurationUnitInMilliseconds(durationUnit);
-                task.end = durationInMilliseconds < minDurationUnitInMilliseconds
-                    ? Gantt.getEndDate(durationUnit, task.start, task.duration)
-                    : task.end;
+                const durationInMilliseconds: number = task.end.getTime() - task.start.getTime(),
+                    minDurationUnitInMilliseconds: number = Gantt.getMinDurationUnitInMilliseconds(durationUnit);
+
+                task.end = durationInMilliseconds < minDurationUnitInMilliseconds ? Gantt.getEndDate(durationUnit, task.start, task.duration) : task.end;
             } else {
                 task.end = isValidDate(task.end) ? task.end : Gantt.getEndDate(durationUnit, task.start, task.duration);
             }
@@ -1075,9 +1166,19 @@ export class Gantt implements IVisual {
 
     private createTask(taskCreationDetails: CreateTaskDto) {
         const {
-            values, index, hasHighlights, categoricalValues,
-            color, completion, categoryValue, endDate, duration, taskType,
-            selectionBuilder, wasDowngradeDurationUnit, stepDurationTransformation,
+            values,
+            index,
+            hasHighlights,
+            categoricalValues,
+            color,
+            completion,
+            categoryValue,
+            endDate,
+            duration,
+            taskType,
+            selectionBuilder,
+            wasDowngradeDurationUnit,
+            stepDurationTransformation,
         } = taskCreationDetails;
 
         const resource: string = String(values?.Resource?.[index] ?? "");
@@ -1141,7 +1242,6 @@ export class Gantt implements IVisual {
         colorHelper: ColorHelper,
         duration: number,
         durationUnit: DurationUnit) {
-
         let color: string = taskColor;
         let completion: number = 0;
         let taskType: LegendGroup = null;
@@ -1157,21 +1257,21 @@ export class Gantt implements IVisual {
                 maxCompletionFromTasks = maxCompletionFromTasks > Gantt.CompletionMax ? Gantt.CompletionMaxInPercent : Gantt.CompletionMax;
 
                 if (group.Duration && group.Duration.values[index] !== null) {
-                    taskType = taskTypes.types.find((typeMeta: LegendGroup) => typeMeta.legendName === group.Duration.source.groupName?.toString());
+                    taskType =
+                        taskTypes.types.find((typeMeta: LegendGroup) => typeMeta.legendName === group.Duration.source.groupName?.toString());
 
                     if (taskType) {
                         selectionBuilder.withCategory(taskType.selectionColumn, 0);
                         color = colorHelper.getColorForMeasure(taskType.columnGroup.objects, taskType.legendName);
                     }
 
-                    duration = (group.Duration.values[index] as number > this.formattingSettings.general.durationMin.value)
-                        ? group.Duration.values[index] as number
-                        : this.formattingSettings.general.durationMin.value;
+                    duration = (group.Duration.values[index] as number > this.formattingSettings.general.durationMin.value) ? group.Duration.values[index] as number : this.formattingSettings.general.durationMin.value;
 
                     if (duration && duration % 1 !== 0) {
                         durationUnit = DurationHelper.downgradeDurationUnit(durationUnit, duration);
                         stepDurationTransformation =
                             GanttDurationUnitType.indexOf(<DurationUnit>this.formattingSettings.general.durationUnit.value.value.toString()) - GanttDurationUnitType.indexOf(durationUnit);
+
                         duration = DurationHelper.transformDuration(duration, durationUnit, stepDurationTransformation);
                         wasDowngradeDurationUnit = true;
                     }
@@ -1181,11 +1281,18 @@ export class Gantt implements IVisual {
                         && Gantt.convertToDecimal(group.Completion.values[index] as number, this.formattingSettings.taskCompletion.maxCompletion.value, maxCompletionFromTasks)) || null;
 
                     if (completion !== null) {
-                        completion = Math.max(Gantt.CompletionMin, Math.min(Gantt.CompletionMax, completion));
+                        if (completion < Gantt.CompletionMin) {
+                            completion = Gantt.CompletionMin;
+                        }
+
+                        if (completion > Gantt.CompletionMax) {
+                            completion = Gantt.CompletionMax;
+                        }
                     }
 
                 } else if (group.EndDate && group.EndDate.values[index] !== null) {
-                    taskType = taskTypes.types.find((typeMeta: LegendGroup) => typeMeta.legendName === group.EndDate.source.groupName?.toString());
+                    taskType =
+                        taskTypes.types.find((typeMeta: LegendGroup) => typeMeta.legendName === group.EndDate.source.groupName?.toString());
 
                     if (taskType) {
                         selectionBuilder.withCategory(taskType.selectionColumn, 0);
@@ -1202,13 +1309,28 @@ export class Gantt implements IVisual {
                         && Gantt.convertToDecimal(group.Completion.values[index] as number, this.formattingSettings.taskCompletion.maxCompletion.value, maxCompletionFromTasks)) || null;
 
                     if (completion !== null) {
-                        completion = Math.max(Gantt.CompletionMin, Math.min(Gantt.CompletionMax, completion));
+                        if (completion < Gantt.CompletionMin) {
+                            completion = Gantt.CompletionMin;
+                        }
+
+                        if (completion > Gantt.CompletionMax) {
+                            completion = Gantt.CompletionMax;
+                        }
                     }
                 }
             });
         }
 
-        return { duration, durationUnit, color, completion, taskType, wasDowngradeDurationUnit, stepDurationTransformation, endDate };
+        return {
+            duration,
+            durationUnit,
+            color,
+            completion,
+            taskType,
+            wasDowngradeDurationUnit,
+            stepDurationTransformation,
+            endDate
+        };
     }
 
     private static addTaskToParentTask(
@@ -1229,6 +1351,7 @@ export class Gantt implements IVisual {
             parentTask.children.push(task);
         } else {
             addedParents.push(taskParentName);
+
             const parentTask: Task = {
                 index: 0,
                 name: taskParentName,
@@ -1252,39 +1375,44 @@ export class Gantt implements IVisual {
                 Milestones: milestone && startDate ? [{ type: milestone, start: startDate, tooltipInfo: null, category: String(categoryValue ?? "") }] : [],
                 highlight: highlight !== null
             };
+
             tasks.push(parentTask);
         }
     }
 
     private getExtraInformationFromValues(values: GanttColumns<any>, taskIndex: number): ExtraInformation[] {
         const extraInformation: ExtraInformation[] = [];
+
         if (values.ExtraInformation) {
             const extraInformationKeys: any[] = Object.keys(values.ExtraInformation);
             for (const key of extraInformationKeys) {
                 const value: string = values.ExtraInformation[key][taskIndex];
                 if (value) {
-                    extraInformation.push({ displayName: key, value: value });
+                    extraInformation.push({
+                        displayName: key,
+                        value: value
+                    });
                 }
             }
         }
+
         return extraInformation;
     }
-
-    // =========================================================================
-    // SORTING
-    // =========================================================================
 
     public static SortTasks(groupedTasks: lodashDictionary<Task[]>): void {
         const taskKeys: string[] = Object.keys(groupedTasks);
 
         const sortingFunction = (a: Task, b: Task) => {
+            // Handle null start dates - push to end
             if (!a.start && !b.start) return 0;
             if (!a.start || !isValidDate(a.start)) return 1;
             if (!b.start || !isValidDate(b.start)) return -1;
 
+            // Compare start times
             const startDiff = a.start.getTime() - b.start.getTime();
             if (startDiff !== 0) return startDiff;
 
+            // Start times equal - sort by end date (longer tasks first)
             if (!a.end && !b.end) return 0;
             if (!a.end || !isValidDate(a.end)) return 1;
             if (!b.end || !isValidDate(b.end)) return -1;
@@ -1321,10 +1449,12 @@ export class Gantt implements IVisual {
         tasks.forEach(task => {
             if (!task.index && !task.parent) {
                 task.index = index++;
+
                 if (task.children) {
                     if (sortingOptions.isCustomSortingNeeded) {
                         task.children.sort(sortingFunction);
                     }
+
                     task.children.forEach(subtask => {
                         subtask.index = subtask.index === null ? index++ : subtask.index;
                     });
@@ -1333,68 +1463,31 @@ export class Gantt implements IVisual {
         });
 
         const resultTasks: Task[] = [];
-        tasks.forEach((task) => { resultTasks[task.index] = task; });
+
+        tasks.forEach((task) => {
+            resultTasks[task.index] = task;
+        });
+
         return resultTasks;
     }
-
-    // =========================================================================
-    // COORDINATE HELPERS
-    // =========================================================================
 
     private getTaskYCoordinateWithLayer(task: Task, taskConfigHeight: number): number {
         return Gantt.getBarYCoordinate(task.index, taskConfigHeight) +
             (task.index + 1) * this.getResourceLabelTopMargin();
     }
 
-    private static getBarYCoordinate(lineNumber: number, lineHeight: number): number {
-        return (lineHeight * lineNumber) + PaddingTasks;
-    }
-
-    private static getBarHeight(lineHeight: number): number {
-        return lineHeight / Gantt.ChartLineProportion;
-    }
-
-    private getResourceLabelTopMargin(): number {
-        const isResourcesFilled: boolean = this.viewModel.isResourcesFilled;
-        const taskResourceSettings: TaskResourceCardSettings = this.formattingSettings.taskResource;
-        const taskResourceShow: boolean = taskResourceSettings.show.value;
-        const taskResourceFontSize: number = taskResourceSettings.fontSize.value;
-        const taskResourcePosition: ResourceLabelPosition = <ResourceLabelPosition>taskResourceSettings.position.value.value;
-        const isTopPosition: boolean = [ResourceLabelPosition.Top, ResourceLabelPosition.TopCenter, ResourceLabelPosition.TopRight].includes(taskResourcePosition);
-
-        let margin: number = 0;
-        if (isResourcesFilled && taskResourceShow && isTopPosition) {
-            margin = Number(taskResourceFontSize) + Gantt.LabelTopOffsetForPadding;
-        }
-        return margin;
-    }
-
-    private static taskDurationToWidth(start: Date, end: Date): number {
-        return Gantt.TimeScale(end) - Gantt.TimeScale(start);
-    }
-
-    // =========================================================================
-    // ISO WEEK NUMBER  (feature #13)
-    // =========================================================================
-
-    private getISOWeekNumber(date: Date): number {
-        const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
-        const dayNum = d.getUTCDay() || 7;
-        d.setUTCDate(d.getUTCDate() + 4 - dayNum);
-        const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-        return Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
-    }
-
-    // =========================================================================
-    // DAYS OFF
-    // =========================================================================
-
+    /**
+     * Calculate days off
+     * @param daysOffDataForAddition Temporary days off data for addition new one
+     * @param firstDayOfWeek First day of working week. From settings
+     * @param date Date for verifying
+     * @param extraCondition Extra condition for handle special case for last date
+     */
     private static addNextDaysOff(
         daysOffDataForAddition: DaysOffDataForAddition,
         firstDayOfWeek: number,
         date: Date,
         extraCondition: boolean = false): DaysOffDataForAddition {
-
         daysOffDataForAddition.amountOfLastDaysOff = 1;
         for (let i = DaysInAWeekend; i > 0; i--) {
             const dateForCheck: Date = new Date(date.getTime() + (i * MillisecondsInADay));
@@ -1418,6 +1511,9 @@ export class Gantt implements IVisual {
                 ]);
             }
 
+            // Example: some task starts on Saturday 8:30 and ends on Thursday 8:30,
+            // so it has extra duration and now will end on next Saturday 8:30
+            // --- we need to add days off -- it ends on Monday 8.30
             if (!alreadyInDaysOffList && (isFirstDayOff || isSecondDayOff) && isPartlyUsed) {
                 const amount = isFirstDayOff ? 2 : 1;
                 daysOffDataForAddition.amountOfLastDaysOff = amount;
@@ -1426,32 +1522,56 @@ export class Gantt implements IVisual {
                 ]);
             }
         }
+
         return daysOffDataForAddition;
     }
 
+    /**
+     * Calculates end date from start date and offset for different durationUnits
+     * @param durationUnit
+     * @param start  Start date
+     * @param step An offset
+     */
     public static getEndDate(durationUnit: DurationUnit, start: Date, step: number): Date {
         switch (durationUnit) {
-            case DurationUnit.Second: return d3TimeSecond.offset(start, step);
-            case DurationUnit.Minute: return d3TimeMinute.offset(start, step);
-            case DurationUnit.Hour: return d3TimeHour.offset(start, step);
-            default: return d3TimeDay.offset(start, step);
+            case DurationUnit.Second:
+                return d3TimeSecond.offset(start, step);
+            case DurationUnit.Minute:
+                return d3TimeMinute.offset(start, step);
+            case DurationUnit.Hour:
+                return d3TimeHour.offset(start, step);
+            default:
+                return d3TimeDay.offset(start, step);
         }
     }
+
 
     private static isDayOff(date: Date, firstDayOfWeek: number): boolean {
         const isFirstDayOff = date.getDay() === (+firstDayOfWeek + 5) % 7;
         const isSecondDayOff = date.getDay() === (+firstDayOfWeek + 6) % 7;
+
         return isFirstDayOff || isSecondDayOff;
     }
 
     private static isSameDay(firstDate: Date, secondDate: Date): boolean {
-        return firstDate.getMonth() === secondDate.getMonth()
-            && firstDate.getFullYear() === secondDate.getFullYear()
+        return firstDate.getMonth() === secondDate.getMonth() && firstDate.getFullYear() === secondDate.getFullYear()
             && firstDate.getDate() === secondDate.getDate();
     }
 
-    private static calculateDaysOff(firstDayOfWeek: number, fromDate: Date, toDate: Date): DayOffData[] {
-        const tempDaysOffData: DaysOffDataForAddition = { list: [], amountOfLastDaysOff: 0 };
+    /**
+     * Calculate days off
+     * @param firstDayOfWeek First day of working week. From settings
+     * @param fromDate Start of task
+     * @param toDate End of task
+     */
+    private static calculateDaysOff(
+        firstDayOfWeek: number,
+        fromDate: Date,
+        toDate: Date): DayOffData[] {
+        const tempDaysOffData: DaysOffDataForAddition = {
+            list: [],
+            amountOfLastDaysOff: 0
+        };
 
         if (Gantt.isSameDay(fromDate, toDate)) {
             if (!Gantt.isDayOff(fromDate, +firstDayOfWeek)) {
@@ -1470,10 +1590,15 @@ export class Gantt implements IVisual {
 
     private static convertMillisecondsToDuration(milliseconds: number, durationUnit: DurationUnit): number {
         switch (durationUnit) {
-            case DurationUnit.Hour: return milliseconds /= MillisecondsInAHour;
-            case DurationUnit.Minute: return milliseconds /= MillisecondsInAMinute;
-            case DurationUnit.Second: return milliseconds /= MillisecondsInASecond;
-            default: return milliseconds /= MillisecondsInADay;
+            case DurationUnit.Hour:
+                return milliseconds /= MillisecondsInAHour;
+            case DurationUnit.Minute:
+                return milliseconds /= MillisecondsInAMinute;
+            case DurationUnit.Second:
+                return milliseconds /= MillisecondsInASecond;
+
+            default:
+                return milliseconds /= MillisecondsInADay;
         }
     }
 
@@ -1482,30 +1607,41 @@ export class Gantt implements IVisual {
         for (let i = 0; i < daysOffList.length; i++) {
             const itemAmount = daysOffList[i][1];
             extraDuration += itemAmount;
+            // not to count for neighbour dates
             if (itemAmount === 2 && (i + 1) < daysOffList.length) {
                 const itemDate = daysOffList[i][0].getDate();
                 const nextDate = daysOffList[i + 1][0].getDate();
-                if (itemDate + 1 === nextDate) { i += 2; }
+                if (itemDate + 1 === nextDate) {
+                    i += 2;
+                }
             }
         }
 
+        // not to add duration twice
         if (this.isDayOff(startDate, firstDayOfWeek)) {
             const prevDayTimestamp = startDate.getTime();
             const prevDate = new Date(prevDayTimestamp);
             prevDate.setHours(0, 0, 0);
+
+            // in milliseconds
             let alreadyAccountedDuration = startDate.getTime() - prevDate.getTime();
             alreadyAccountedDuration = Gantt.convertMillisecondsToDuration(alreadyAccountedDuration, durationUnit);
             extraDuration = DurationHelper.transformExtraDuration(durationUnit, extraDuration);
+
             extraDuration -= alreadyAccountedDuration;
         }
 
         return extraDuration;
     }
 
-    // =========================================================================
-    // CONVERTER
-    // =========================================================================
-
+    /**
+     * Convert the dataView to view model
+     * @param dataView The data Model
+     * @param host Host object
+     * @param colors Color palette
+     * @param colorHelper powerbi color helper
+     * @param localizationManager localization manager returns localized strings
+     */
     public converter(dataView: DataView, sortingOptions: SortingOptions, viewMode: powerbi.ViewMode): GanttViewModel {
         if (dataView?.categorical?.categories?.length === 0 || !Gantt.isChartHasTask(dataView)) {
             return null;
@@ -1515,10 +1651,10 @@ export class Gantt implements IVisual {
 
         const formatters: GanttChartFormatters = this.getFormatters(dataView, this.host.locale || null);
 
-        const isDurationFilled: boolean = dataView.metadata.columns.findIndex(col => Gantt.hasRole(col, GanttRole.Duration)) !== -1;
-        const isEndDateFilled: boolean = dataView.metadata.columns.findIndex(col => Gantt.hasRole(col, GanttRole.EndDate)) !== -1;
-        const isParentFilled: boolean = dataView.metadata.columns.findIndex(col => Gantt.hasRole(col, GanttRole.Parent)) !== -1;
-        const isResourcesFilled: boolean = dataView.metadata.columns.findIndex(col => Gantt.hasRole(col, GanttRole.Resource)) !== -1;
+        const isDurationFilled: boolean = dataView.metadata.columns.findIndex(col => Gantt.hasRole(col, GanttRole.Duration)) !== -1,
+            isEndDateFilled: boolean = dataView.metadata.columns.findIndex(col => Gantt.hasRole(col, GanttRole.EndDate)) !== -1,
+            isParentFilled: boolean = dataView.metadata.columns.findIndex(col => Gantt.hasRole(col, GanttRole.Parent)) !== -1,
+            isResourcesFilled: boolean = dataView.metadata.columns.findIndex(col => Gantt.hasRole(col, GanttRole.Resource)) !== -1;
 
         const legendData: LegendData = this.createLegend(legendTypes, !isDurationFilled && !isEndDateFilled);
         const milestoneData: MilestoneData = Gantt.createMilestones(dataView, this.host, viewMode, this.settingsService.state, this.formattingSettings.milestones.generalGroup.keepSettingsOnFiltering.value);
@@ -1533,7 +1669,6 @@ export class Gantt implements IVisual {
             legendItem.label = legendItem.label || this.formattingSettings.legend.general.emptyLabelText.value;
             return legendItem;
         });
-
         return {
             dataView,
             taskTypes: legendTypes,
@@ -1541,51 +1676,73 @@ export class Gantt implements IVisual {
             legendData,
             milestoneData,
             isDurationFilled,
-            isEndDateFilled,
+            isEndDateFilled: isEndDateFilled,
             isParentFilled,
             isResourcesFilled,
         };
     }
 
     private static convertToDecimal(value: number, maxCompletionFromSettings: number, maxCompletionFromTasks: number): number {
-        if (maxCompletionFromSettings) { return value / maxCompletionFromSettings; }
+        if (maxCompletionFromSettings) {
+            return value / maxCompletionFromSettings;
+        }
         return value / maxCompletionFromTasks;
     }
 
+    /**
+    * Gets all unique types from the tasks array
+    * @param dataView The data model.
+    */
     private static getAllLegendTypes(dataView: DataView): LegendType {
-        const legendTypes: LegendType = { legendColumnName: "", types: [] };
+        const legendTypes: LegendType = {
+            legendColumnName: "",
+            types: []
+        };
         const index: number = dataView.metadata.columns.findIndex(col => GanttRole.Legend in col.roles);
 
         if (index !== -1) {
             const legendMetaCategoryColumn: DataViewMetadataColumn = dataView.metadata.columns[index];
             legendTypes.legendColumnName = legendMetaCategoryColumn.displayName;
             const values = (dataView?.categorical?.values?.length && dataView.categorical.values) || <DataViewValueColumns>[];
-            if (values === undefined || values.length === 0) { return; }
+
+            if (values === undefined || values.length === 0) {
+                return;
+            }
 
             const groupValues = values.grouped();
             legendTypes.types = groupValues.map((group: DataViewValueColumnGroup): LegendGroup => {
                 const column: DataViewCategoryColumn = {
                     identity: [group.identity],
-                    source: { displayName: null, queryName: legendMetaCategoryColumn.queryName },
+                    source: {
+                        displayName: null,
+                        queryName: legendMetaCategoryColumn.queryName
+                    },
                     values: null
                 };
-                return { legendName: group.name?.toString(), selectionColumn: column, columnGroup: group };
+                return {
+                    legendName: group.name?.toString(),
+                    selectionColumn: column,
+                    columnGroup: group
+                };
             });
         }
+
         return legendTypes;
     }
 
     private static hasHighlights(dataView: DataView): boolean {
         const values = (dataView?.categorical?.values?.length && dataView.categorical.values) || <DataViewValueColumns>[];
-        return !!values.some(({ highlights }) => highlights?.some(Number.isInteger));
+        const highlightsExist = values.some(({ highlights }) => highlights?.some(Number.isInteger));
+        return !!highlightsExist;
     }
 
-    // =========================================================================
-    // LEGEND RENDERING
-    // =========================================================================
-
+    /**
+     * Get legend data, calculate position and draw it
+     */
     private renderLegend(): void {
-        if (!this.viewModel.legendData?.dataPoints) { return; }
+        if (!this.viewModel.legendData?.dataPoints) {
+            return;
+        }
 
         const settings = this.formattingSettings.legend.general;
         const position: string | LegendPosition = this.formattingSettings.legend.show.value
@@ -1602,6 +1759,7 @@ export class Gantt implements IVisual {
             .style("font-weight", settings.bold.value ? "bold" : "normal")
             .style("font-style", settings.italic.value ? "italic" : "normal")
             .style("text-decoration", settings.underline.value ? "underline" : "none");
+
 
         LegendModule.positionChartArea(this.ganttDiv, this.legend);
 
@@ -1621,289 +1779,219 @@ export class Gantt implements IVisual {
         }
     }
 
-    // =========================================================================
-    // ZOOM CONTROLS  (feature #3)
-    // =========================================================================
-
-    private createZoomControls(axisTranslateX: number): void {
-        this.zoomControlGroup.selectAll("*").remove();
-
-        // Simple +/- buttons positioned at top-right of axis area
-        const btnSize = 20;
-        const btnY = -Gantt.TaskLabelsMarginTop + 2;
-        const btnX = this.viewport.width - 55;
-
-        // Zoom Out button
-        const zoomOut = this.zoomControlGroup.append("g")
-            .attr("cursor", "pointer")
-            .attr("transform", SVGManipulations.translate(btnX, btnY));
-
-        zoomOut.append("rect")
-            .attr("width", btnSize).attr("height", btnSize)
-            .attr("rx", 3).attr("ry", 3)
-            .style("fill", "#e8e8e8")
-            .style("stroke", "#ccc");
-
-        zoomOut.append("text")
-            .attr("x", btnSize / 2).attr("y", btnSize / 2 + 5)
-            .attr("text-anchor", "middle")
-            .style("font-size", "14px")
-            .style("user-select", "none")
-            .text("−");
-
-        zoomOut.on("click", () => this.applyZoom(1.5));
-
-        // Zoom In button
-        const zoomIn = this.zoomControlGroup.append("g")
-            .attr("cursor", "pointer")
-            .attr("transform", SVGManipulations.translate(btnX + btnSize + 4, btnY));
-
-        zoomIn.append("rect")
-            .attr("width", btnSize).attr("height", btnSize)
-            .attr("rx", 3).attr("ry", 3)
-            .style("fill", "#e8e8e8")
-            .style("stroke", "#ccc");
-
-        zoomIn.append("text")
-            .attr("x", btnSize / 2).attr("y", btnSize / 2 + 5)
-            .attr("text-anchor", "middle")
-            .style("font-size", "14px")
-            .style("user-select", "none")
-            .text("+");
-
-        zoomIn.on("click", () => this.applyZoom(0.67));
-
-        // Reset button
-        const zoomReset = this.zoomControlGroup.append("g")
-            .attr("cursor", "pointer")
-            .attr("transform", SVGManipulations.translate(btnX + (btnSize + 4) * 2, btnY));
-
-        zoomReset.append("rect")
-            .attr("width", btnSize + 4).attr("height", btnSize)
-            .attr("rx", 3).attr("ry", 3)
-            .style("fill", "#e8e8e8")
-            .style("stroke", "#ccc");
-
-        zoomReset.append("text")
-            .attr("x", (btnSize + 4) / 2).attr("y", btnSize / 2 + 5)
-            .attr("text-anchor", "middle")
-            .style("font-size", "9px")
-            .style("user-select", "none")
-            .text("1:1");
-
-        zoomReset.on("click", () => {
-            this.zoomState = null;
-            this.render(this.viewModel.dataView.metadata.objects);
-        });
-    }
-
-    private applyZoom(factor: number): void {
-        if (!this.hasNotNullableDates) { return; }
-
-        const tasksAfterGrouping: Task[] = this.viewModel.tasks
-            .filter(t => t.visibility)
-            .flatMap(t => [t]);
-
-        const minDateTask = lodashMinBy(tasksAfterGrouping, t => t && t.start);
-        const maxDateTask = lodashMaxBy(tasksAfterGrouping, t => t && t.end);
-        if (!minDateTask || !maxDateTask) { return; }
-
-        let startDate = this.zoomState ? this.zoomState.startDate : minDateTask.start;
-        let endDate = this.zoomState ? this.zoomState.endDate : maxDateTask.end;
-
-        const centerTime = (startDate.getTime() + endDate.getTime()) / 2;
-        const halfRange = (endDate.getTime() - startDate.getTime()) / 2 * factor;
-
-        startDate = new Date(centerTime - halfRange);
-        endDate = new Date(centerTime + halfRange);
-
-        // Clamp to data range
-        if (startDate < minDateTask.start) { startDate = new Date(minDateTask.start); }
-        if (endDate > maxDateTask.end) { endDate = new Date(maxDateTask.end); }
-
-        this.zoomState = { startDate, endDate, zoomFactor: factor };
-        this.render(this.viewModel.dataView.metadata.objects);
-    }
-
-    // =========================================================================
-    // MULTI-LEVEL AXIS  (feature #2)
-    // =========================================================================
-
-    private getActiveAxisLevels(): DateType[] {
-        const dt = this.formattingSettings.dateType;
-        const levels: DateType[] = [];
-
-        // Primary (always shown — the current dateType)
-        const primary = DateType[dt.type.value.value as keyof typeof DateType];
-        levels.push(primary);
-
-        // Secondary if configured
-        if ((dt as any).secondaryLevel?.value?.value) {
-            const secondary = DateType[(dt as any).secondaryLevel.value.value as keyof typeof DateType];
-            if (secondary && secondary !== primary) {
-                levels.unshift(secondary); // put higher-level on top
-            }
-        }
-
-        // Tertiary
-        if ((dt as any).tertiaryLevel?.value?.value) {
-            const tertiary = DateType[(dt as any).tertiaryLevel.value.value as keyof typeof DateType];
-            if (tertiary && tertiary !== primary) {
-                levels.unshift(tertiary);
-            }
-        }
-
-        return [...new Set(levels)].slice(0, MaxAxisLevels);
-    }
-
-    private getTimeIntervalsFn(dateType: DateType) {
-        switch (dateType) {
-            case DateType.Second: return d3TimeSecond;
-            case DateType.Minute: return d3TimeMinute;
-            case DateType.Hour: return d3TimeHour;
-            case DateType.Day: return d3TimeDay;
-            case DateType.Week: return d3TimeWeek;
-            case DateType.Month: return d3TimeMonth;
-            case DateType.Quarter: return d3TimeQuarter ?? d3TimeMonth;
-            case DateType.Year: return d3TimeYear;
-            default: return d3TimeWeek;
-        }
-    }
-
-    private formatAxisLabel(date: Date, dateType: DateType): string {
-        const dt = this.formattingSettings.dateType;
-        const cultureSelector = this.host.locale;
-
-        // Fiscal year support (feature #10)
-        if (dateType === DateType.Year && (dt as any).enableFiscalYear?.value) {
-            const fiscalStart = +((dt as any).fiscalYearStart?.value?.value ?? 0);
-            const fiscalYear = date.getMonth() >= fiscalStart ? date.getFullYear() + 1 : date.getFullYear();
-            return `FY${fiscalYear}`;
-        }
-
-        // ISO Week numbers (feature #13)
-        if (dateType === DateType.Week && (dt as any).showWeekNumbers?.value) {
-            return `W${this.getISOWeekNumber(date)}`;
-        }
-
-        const formatter = ValueFormatter.create({
-            format: Gantt.DefaultValues.DateFormatStrings[dateType],
-            cultureSelector
-        });
-        return formatter.format(date);
-    }
-
-    private renderMultiLevelAxis(startDate: Date, endDate: Date, axisTranslateX: number, scrollTop: number): void {
-        this.multiAxisGroup.selectAll("*").remove();
-
-        const levels = this.getActiveAxisLevels();
-        const levelCount = levels.length;
-
-        // If only one level, skip (normal axis handles it)
-        if (levelCount <= 1) { return; }
-
-        const bgColors = ["#f0f0f0", "#e0e8f0", "#d0e0f0"];
-        const textColors = ["#333", "#444", "#555"];
-
-        levels.forEach((level, levelIdx) => {
-            const yOffset = levelIdx * AxisLevelHeight - (levelCount * AxisLevelHeight);
-            const intervalFn = this.getTimeIntervalsFn(level);
-            const intervals: Date[] = intervalFn.range(startDate, endDate);
-
-            const levelGroup = this.multiAxisGroup.append("g")
-                .attr("class", `multi-axis-level-${levelIdx}`)
-                .attr("transform", SVGManipulations.translate(0, yOffset + scrollTop));
-
-            // background strip
-            levelGroup.append("rect")
-                .attr("x", 0)
-                .attr("y", 0)
-                .attr("width", "10000")
-                .attr("height", AxisLevelHeight)
-                .style("fill", bgColors[levelIdx] || "#f5f5f5")
-                .style("opacity", 0.9);
-
-            intervals.forEach((intervalDate, i) => {
-                const x1 = Gantt.TimeScale(intervalDate);
-                const nextDate = intervals[i + 1] || endDate;
-                const x2 = Gantt.TimeScale(nextDate);
-                const width = Math.max(0, x2 - x1);
-
-                // border line
-                levelGroup.append("line")
-                    .attr("x1", x1).attr("y1", 0)
-                    .attr("x2", x1).attr("y2", AxisLevelHeight)
-                    .style("stroke", "#ccc").style("stroke-width", 1);
-
-                // label
-                levelGroup.append("text")
-                    .attr("x", x1 + width / 2)
-                    .attr("y", AxisLevelHeight / 2 + 4)
-                    .attr("text-anchor", "middle")
-                    .style("font-size", "10px")
-                    .style("fill", textColors[levelIdx] || "#333")
-                    .style("pointer-events", "none")
-                    .text(this.formatAxisLabel(intervalDate, level))
-                    .call(AxisHelper.LabelLayoutStrategy.clip, Math.max(0, width - 4), textMeasurementService.svgEllipsis);
-            });
-        });
-
-        this.multiAxisGroup.attr("transform", SVGManipulations.translate(axisTranslateX, 0));
-    }
-
-    // =========================================================================
-    // AXIS
-    // =========================================================================
-
     private scaleAxisLength(axisLength: number): number {
         const fullScreenAxisLength: number = Gantt.DefaultGraphicWidthPercentage * this.viewport.width;
-        if (axisLength < fullScreenAxisLength) { axisLength = fullScreenAxisLength; }
+        if (axisLength < fullScreenAxisLength) {
+            axisLength = fullScreenAxisLength;
+        }
+
         return axisLength;
     }
 
-    private renderAxis(xAxisProperties: IAxisProperties, duration: number = Gantt.DefaultDuration): void {
-        const dateTypeSettings: DateTypeCardSettings = this.formattingSettings.dateType;
-        const backgroundSettings: BaseBackroundSettings = this.formattingSettings.background.dateType;
+    /**
+    * Called on data change or resizing
+    * @param options The visual option that contains the dataView and the viewport
+    */
+    public update(options: VisualUpdateOptions): void {
+        try {
+            if (!options || !options.dataViews || !options.dataViews[0]) {
+                this.clearViewport();
+                return;
+            }
 
-        const axisColor: string = dateTypeSettings.axisColor.value.value;
-        const axisTextColor: string = dateTypeSettings.axisTextColor.value.value;
-        const axisFontSize: number = dateTypeSettings.axisFontSize.value;
-        const axisBackgroundEnable: boolean = backgroundSettings.enable.value;
-        const axisBackgroundColor: string = backgroundSettings.color.value.value;
-        const axisBackgroundOpacity: number = backgroundSettings.opacity.value;
+            const collapsedTasksUpdateId: any = options.dataViews[0].metadata?.objects?.collapsedTasksUpdateId?.value;
 
-        const xAxis = xAxisProperties.axis;
-        this.axisGroup.call(xAxis.tickSizeOuter(xAxisProperties.outerPadding));
+            if (this.collapsedTasksUpdateIDs.includes(collapsedTasksUpdateId)) {
+                this.collapsedTasksUpdateIDs = this.collapsedTasksUpdateIDs.filter(id => id !== collapsedTasksUpdateId);
+                return;
+            }
 
-        this.axisGroup.transition().duration(duration).call(xAxis);
-
-        this.axisGroup.selectAll("path").style("stroke", axisColor);
-        this.axisGroup.selectAll(".tick line").style("stroke", (timestamp: number) => this.setTickColor(timestamp, axisColor));
-        this.axisGroup.selectAll(".tick text")
-            .style("fill", (timestamp: number) => this.setTickColor(timestamp, axisTextColor))
-            .style("font-size", axisFontSize);
-
-        this.axisBackground
-            .style("fill", axisBackgroundEnable ? axisBackgroundColor : "none")
-            .style("fill-opacity", !isNaN(axisBackgroundOpacity) ? axisBackgroundOpacity / 100 : 1);
+            this.updateInternal(options);
+        } catch (error) {
+            console.error(error);
+            this.eventService.renderingFailed(options, error);
+        }
     }
 
-    private setTickColor(timestamp: number, defaultColor: string): string {
-        const tickTime = new Date(timestamp);
-        const daysOffSettings: DaysOffCardSettings = this.formattingSettings.daysOff;
-        const firstDayOfWeek: string = daysOffSettings.firstDayOfWeek?.value?.value.toString();
-        const color: string = daysOffSettings.fill.value.value;
+    private updateInternal(options: VisualUpdateOptions): void {
+        this.formattingSettings = this.formattingSettingsService.populateFormattingSettingsModel(GanttChartSettingsModel, options.dataViews[0]);
+        this.formattingSettings.setHighContrastColors(this.colorHelper);
+        this.formattingSettings.parse();
+        this.settingsService.state.parse(this.formattingSettings.milestones.milestoneGroup.persistSettings.value);
 
-        if (daysOffSettings.show.value) {
-            const dateForCheck: Date = new Date(tickTime.getTime());
-            for (let i = 0; i <= DaysInAWeekend; i++) {
-                if (dateForCheck.getDay() === +firstDayOfWeek) {
-                    return !i ? defaultColor : color;
+        this.sortingOptions = Gantt.getSortingOptions(options.dataViews[0]);
+        this.viewModel = this.converter(options.dataViews[0], this.sortingOptions, options.viewMode);
+
+
+        // for duplicated milestone types
+        if (this.viewModel && this.viewModel.milestoneData) {
+            const newMilestoneData: MilestoneData = this.viewModel.milestoneData;
+            const milestonesWithoutDuplicates = Gantt.GetUniqueMilestones(newMilestoneData.dataPoints);
+
+            this.settingsService.state.setMilestonesSettings(milestonesWithoutDuplicates);
+
+            newMilestoneData.dataPoints.forEach((dataPoint: MilestoneDataPoint) => {
+                if (dataPoint.name) {
+                    const theSameUniqDataPoint: MilestoneDataPoint = milestonesWithoutDuplicates[dataPoint.name];
+                    dataPoint.color = theSameUniqDataPoint.color;
+                    dataPoint.shapeType = theSameUniqDataPoint.shapeType;
                 }
-                dateForCheck.setDate(dateForCheck.getDate() + 1);
+            });
+
+            this.viewModel.milestoneData = newMilestoneData;
+            if (this.settingsService.state.hasBeenUpdated
+                && (options.viewMode === powerbi.ViewMode.Edit || options.viewMode === powerbi.ViewMode.InFocusEdit)
+            ) {
+                // We save state once rendering is done to save current milestones settings because they might be lost after filtering.
+                this.settingsService.save();
             }
         }
-        return defaultColor;
+
+        if (!this.viewModel || !this.viewModel.tasks || this.viewModel.tasks.length <= 0) {
+            this.clearViewport();
+            return;
+        }
+
+        this.viewport = structuredClone(options.viewport);
+        this.margin = Gantt.DefaultMargin;
+
+        this.eventService.renderingStarted(options);
+
+        this.render(options.dataViews[0].metadata.objects);
+
+        this.eventService.renderingFinished(options);
+    }
+
+    private render(objects: powerbi.DataViewObjects): void {
+        const settings = this.formattingSettings;
+
+        this.renderLegend();
+        this.updateChartSize();
+
+        const visibleTasks = this.viewModel.tasks
+            .filter((task: Task) => task.visibility);
+        const tasks: Task[] = visibleTasks
+            .map((task: Task, i: number) => {
+                task.index = i;
+                return task;
+            });
+
+        if (tasks.length < Gantt.MinTasks) {
+            return;
+        }
+
+        this.collapsedTasks = JSON.parse(settings.collapsedTasks.list.value);
+        const groupTasks = settings.general.groupTasks.value;
+        const layerOverlappingTasks = settings.general.overlappingTasksGroup;
+        const groupedTasks: GroupedTask[] = this.getGroupTasks(tasks, groupTasks, this.collapsedTasks, layerOverlappingTasks);
+        // do something with task ids
+        this.updateCommonTasks(groupedTasks);
+        this.updateCommonMilestones(groupedTasks);
+
+        const tasksAfterGrouping: Task[] = groupedTasks.flatMap(t => t.tasks);
+        const minDateTask: Task = lodashMinBy(tasksAfterGrouping, (t) => t && t.start);
+        const maxDateTask: Task = lodashMaxBy(tasksAfterGrouping, (t) => t && t.end);
+        this.hasNotNullableDates = !!minDateTask && !!maxDateTask;
+
+        let axisLength: number = 0;
+        if (this.hasNotNullableDates) {
+            const startDate: Date = minDateTask.start;
+            let endDate: Date = maxDateTask.end;
+
+            if (startDate.toString() === endDate.toString()) {
+                endDate = new Date(endDate.valueOf() + (24 * 60 * 60 * 1000));
+            }
+
+            const dateTypeMilliseconds: number = Gantt.getDateType(DateType[settings.dateType.type.value.value]);
+            let ticks: number = Math.ceil(Math.round(endDate.valueOf() - startDate.valueOf()) / dateTypeMilliseconds);
+            ticks = ticks < 2 ? 2 : ticks;
+
+            axisLength = ticks * Gantt.DefaultTicksLength;
+            axisLength = this.scaleAxisLength(axisLength);
+
+            const viewportIn: IViewport = {
+                height: this.viewport.height,
+                width: axisLength
+            };
+
+            const xAxisProperties: IAxisProperties = this.calculateAxes(viewportIn, this.textProperties, startDate, endDate, ticks, false);
+            this.xAxisProperties = xAxisProperties;
+            Gantt.TimeScale = <d3TimeScale<Date, Date>>xAxisProperties.scale;
+
+            this.renderAxis(xAxisProperties);
+        }
+
+        axisLength = this.scaleAxisLength(axisLength);
+
+        this.setDimension(groupedTasks, axisLength, settings);
+
+        this.updateSvgBackgroundColor();
+        this.renderTasks(groupedTasks, objects);
+        this.updateTaskLabels(groupedTasks, settings.taskLabels.taskLabelsGroup.general.width.value);
+        this.updateElementsPositions(this.margin);
+        this.createMilestoneLine(groupedTasks);
+
+        if (this.formattingSettings.general.scrollToCurrentTime.value && this.hasNotNullableDates) {
+            this.scrollToMilestoneLine(axisLength);
+        }
+
+        this.bindBehaviorOptions(tasks);
+    }
+
+    private bindBehaviorOptions(tasks: Task[]): void {
+        const legendItemsSelection: d3Selection<SVGGElement, LegendDataPoint, any, any> = this.body.selectAll(Gantt.LegendItems.selectorName);
+        const legendDataPoints = legendItemsSelection.data();
+        const behaviorOptions: BehaviorOptions = {
+            dataPoints: tasks,
+            legendDataPoints: legendDataPoints,
+            hasHighlights: this.hasHighlights,
+            clearCatcher: this.body,
+            taskSelection: this.taskGroup.selectAll(Gantt.SingleTask.selectorName),
+            legendSelection: legendItemsSelection,
+            subTasksCollapse: {
+                selection: this.body.selectAll(Gantt.ClickableArea.selectorName),
+                callback: this.subTasksCollapseCb.bind(this)
+            },
+            allSubTasksCollapse: {
+                selection: this.body.select(Gantt.CollapseAll.selectorName),
+                arrowSelection: this.body.select(Gantt.CollapseAll.selectorName).select(Gantt.CollapseAllArrow.selectorName),
+                callback: this.subTasksCollapseAll.bind(this)
+            },
+        };
+
+        this.behavior.bindEvents(behaviorOptions);
+        this.behavior.renderSelection(this.hasHighlights);
+    }
+
+    private static getDateType(dateType: DateType): number {
+        switch (dateType) {
+            case DateType.Second:
+                return MillisecondsInASecond;
+
+            case DateType.Minute:
+                return MillisecondsInAMinute;
+
+            case DateType.Hour:
+                return MillisecondsInAHour;
+
+            case DateType.Day:
+                return MillisecondsInADay;
+
+            case DateType.Week:
+                return MillisecondsInWeek;
+
+            case DateType.Month:
+                return MillisecondsInAMonth;
+
+            case DateType.Quarter:
+                return MillisecondsInAQuarter;
+
+            case DateType.Year:
+                return MillisecondsInAYear;
+
+            default:
+                return MillisecondsInWeek;
+        }
     }
 
     private calculateAxes(
@@ -1940,10 +2028,16 @@ export class Gantt implements IVisual {
         const width: number = viewportIn.width;
         const axes: IAxisProperties = this.calculateAxesProperties(viewportIn, visualOptions, category);
         axes.willLabelsFit = AxisHelper.LabelLayoutStrategy.willLabelsFit(
-            axes, width, textMeasurementService.measureSvgTextWidth, textProperties);
+            axes,
+            width,
+            textMeasurementService.measureSvgTextWidth,
+            textProperties);
+
+        // If labels do not fit, and we are not scrolling, try word breaking
         axes.willLabelsWordBreak = (!axes.willLabelsFit && !scrollbarVisible) && AxisHelper.LabelLayoutStrategy.willLabelsWordBreak(
             axes, this.margin, width, textMeasurementService.measureSvgTextWidth,
-            textMeasurementService.estimateSvgTextHeight, textMeasurementService.getTailoredTextOrDefault, textProperties);
+            textMeasurementService.estimateSvgTextHeight, textMeasurementService.getTailoredTextOrDefault,
+            textProperties);
 
         return axes;
     }
@@ -1952,15 +2046,12 @@ export class Gantt implements IVisual {
         viewportIn: IViewport,
         options: GanttCalculateScaleAndDomainOptions,
         metaDataColumn: DataViewMetadataColumn): IAxisProperties {
-
         const dateType: DateType = DateType[this.formattingSettings.dateType.type.value.value];
         const cultureSelector: string = this.host.locale;
         const xAxisDateFormatter: IValueFormatter = ValueFormatter.create({
             format: Gantt.DefaultValues.DateFormatStrings[dateType],
             cultureSelector
         });
-        const dt = this.formattingSettings.dateType;
-
         const xAxisProperties: IAxisProperties = AxisHelper.createAxis({
             pixelSpan: viewportIn.width,
             dataDomain: options.forcedXDomain,
@@ -1973,21 +2064,7 @@ export class Gantt implements IVisual {
             useTickIntervalForDisplayUnits: true,
             isCategoryAxis: true,
             getValueFn: (index) => {
-                const date = new Date(index);
-
-                // Fiscal Year support (feature #10)
-                if (dateType === DateType.Year && (dt as any).enableFiscalYear?.value) {
-                    const fiscalStart = +((dt as any).fiscalYearStart?.value?.value ?? 0);
-                    const fiscalYear = date.getMonth() >= fiscalStart ? date.getFullYear() + 1 : date.getFullYear();
-                    return `FY${fiscalYear}`;
-                }
-
-                // ISO Week Number support (feature #13)
-                if (dateType === DateType.Week && (dt as any).showWeekNumbers?.value) {
-                    return `W${this.getISOWeekNumber(date)}`;
-                }
-
-                return xAxisDateFormatter.format(date);
+                return xAxisDateFormatter.format(new Date(index));
             },
             scaleType: options.categoryAxisScaleType,
             axisDisplayUnits: options.categoryAxisDisplayUnits,
@@ -1997,11 +2074,11 @@ export class Gantt implements IVisual {
         return xAxisProperties;
     }
 
-    // =========================================================================
-    // DIMENSION
-    // =========================================================================
+    private setDimension(
+        groupedTasks: GroupedTask[],
+        axisLength: number,
+        settings: GanttChartSettingsModel): void {
 
-    private setDimension(groupedTasks: GroupedTask[], axisLength: number, settings: GanttChartSettingsModel): void {
         let totalRows = 0;
         groupedTasks.forEach(group => {
             if (settings.general.groupTasks.value) {
@@ -2013,7 +2090,7 @@ export class Gantt implements IVisual {
         });
 
         const fullResourceLabelMargin = totalRows * this.getResourceLabelTopMargin();
-        let widthBeforeConversion = this.margin.left + settings.taskLabels.taskLabelsGroup.general.width.value + this.dataGridExtraWidth + axisLength;
+        let widthBeforeConversion = this.margin.left + settings.taskLabels.taskLabelsGroup.general.width.value + axisLength;
 
         if (settings.taskResource.show.value && settings.taskResource.position.value.value === ResourceLabelPosition.Right) {
             widthBeforeConversion += Gantt.DefaultValues.ResourceWidth;
@@ -2024,16 +2101,16 @@ export class Gantt implements IVisual {
         const height = PixelConverter.toString(totalRows * (settings.taskConfig.height.value || DefaultChartLineHeight) + this.margin.top + fullResourceLabelMargin);
         const width = PixelConverter.toString(widthBeforeConversion);
 
-        this.ganttSvg.attr("height", height).attr("width", width);
+        this.ganttSvg
+            .attr("height", height)
+            .attr("width", width);
     }
-
-    // =========================================================================
-    // TASK GROUPING & LAYERING
-    // =========================================================================
 
     private getGroupTasks(tasks: Task[], groupTasks: boolean, collapsedTasks: string[], overlappingSettings: OverlappingTasks): GroupedTask[] {
         if (groupTasks) {
-            const groupedTasks: lodashDictionary<Task[]> = lodashGroupBy(tasks, x => (x.parent ? `${x.parent}.${x.name}` : x.name));
+            const groupedTasks: lodashDictionary<Task[]> = lodashGroupBy(tasks,
+                x => (x.parent ? `${x.parent}.${x.name}` : x.name));
+
             const result: GroupedTask[] = [];
             const taskKeys: string[] = Object.keys(groupedTasks);
             const alreadyReviewedKeys: string[] = [];
@@ -2041,28 +2118,40 @@ export class Gantt implements IVisual {
             if (this.sortingOptions.isCustomSortingNeeded) {
                 const collator = new Intl.Collator(this.host?.locale ?? undefined, { numeric: true, sensitivity: "base" });
                 const dir = this.sortingOptions.sortingDirection === SortDirection.Ascending ? 1 : -1;
-                taskKeys.sort((a, b) => collator.compare(a ?? "", b ?? "") * dir);
+                const sortingFunction = (a: string, b: string) => collator.compare(a ?? "", b ?? "") * dir;
+                taskKeys.sort(sortingFunction);
             }
 
             Gantt.SortTasks(groupedTasks);
 
             for (const key of taskKeys) {
-                if (alreadyReviewedKeys.includes(key)) { continue; }
+                const isKeyAlreadyReviewed = alreadyReviewedKeys.includes(key);
+                if (isKeyAlreadyReviewed) continue;
 
                 let name: string = key;
-                if (groupedTasks[key]?.length && groupedTasks[key][0].parent && key.indexOf(groupedTasks[key][0].parent) !== -1) {
+                if (groupedTasks[key] && groupedTasks[key].length && groupedTasks[key][0].parent && key.indexOf(groupedTasks[key][0].parent) !== -1) {
                     name = key.substr(groupedTasks[key][0].parent.length + 1, key.length);
                 }
 
-                const taskRecord: GroupedTask = { name, tasks: groupedTasks[key], index: null, layers: new Map<number, Task[]>() };
+                // add current task
+                const taskRecord: GroupedTask = {
+                    name,
+                    tasks: groupedTasks[key],
+                    index: null,
+                    layers: new Map<number, Task[]>()
+                };
                 result.push(taskRecord);
                 alreadyReviewedKeys.push(key);
+
+                // see all the children and add them
 
                 for (const task of groupedTasks[key]) {
                     if (task.children && !collapsedTasks.includes(task.name)) {
                         for (const childrenTask of task.children) {
                             const childrenFullName = `${name}.${childrenTask.name}`;
-                            if (!alreadyReviewedKeys.includes(childrenFullName)) {
+                            const isChildrenKeyAlreadyReviewed = alreadyReviewedKeys.includes(childrenFullName);
+
+                            if (!isChildrenKeyAlreadyReviewed) {
                                 const childrenRecord: GroupedTask = {
                                     name: childrenTask.name,
                                     tasks: groupedTasks[childrenFullName],
@@ -2072,8 +2161,10 @@ export class Gantt implements IVisual {
                                 result.push(childrenRecord);
                                 alreadyReviewedKeys.push(childrenFullName);
                             }
+
                         }
                     }
+
                 }
             }
 
@@ -2082,6 +2173,8 @@ export class Gantt implements IVisual {
                 x.index = i;
             });
 
+            // Ensure that the tasks with children are displayed first
+            // https://dev.azure.com/powerbi/PowerBICustomVisuals/_workitems/edit/1421305
             result.forEach((group: GroupedTask) => {
                 group.tasks.sort((a, b) => (b.children?.length || 0) - (a.children?.length || 0));
             });
@@ -2093,12 +2186,14 @@ export class Gantt implements IVisual {
             };
 
             switch (overlappingSettings.displayTasks.value.value) {
-                case OverlappingLayeringStrategyOptions.LayerByLegend:
+                case OverlappingLayeringStrategyOptions.LayerByLegend: {
                     processLayers(this.calculateTaskLayersByLegend.bind(this));
                     break;
-                case OverlappingLayeringStrategyOptions.LayerOverlapping:
+                }
+                case OverlappingLayeringStrategyOptions.LayerOverlapping: {
                     processLayers(this.calculateTaskLayers.bind(this));
                     break;
+                }
             }
 
             return result;
@@ -2119,11 +2214,14 @@ export class Gantt implements IVisual {
                 groupedTask.tasks.forEach(task => task.layer = 0);
                 return;
             }
+
             tasks[0].layer = 0;
             const layerEndTimes: Date[] = [tasks[0].end];
+
             for (let i = 1; i < tasks.length; i++) {
                 const task = tasks[i];
                 let assignedLayer = -1;
+
                 for (let layerIndex = 0; layerIndex < layerEndTimes.length; layerIndex++) {
                     if (task.start >= layerEndTimes[layerIndex]) {
                         assignedLayer = layerIndex;
@@ -2131,10 +2229,12 @@ export class Gantt implements IVisual {
                         break;
                     }
                 }
+
                 if (assignedLayer === -1) {
                     assignedLayer = layerEndTimes.length;
                     layerEndTimes.push(task.end);
                 }
+
                 task.layer = assignedLayer;
             }
         });
@@ -2145,7 +2245,7 @@ export class Gantt implements IVisual {
         const legendLabels = legendDataPoints.map(dp => dp.label);
 
         groupedTasks.forEach(groupedTask => {
-            const tasksByLegend = lodashGroupBy(groupedTask.tasks, "taskType");
+            const tasksByLegend = lodashGroupBy(groupedTask.tasks, 'taskType');
             let totalLayers = 0;
 
             legendLabels.forEach(label => {
@@ -2154,7 +2254,7 @@ export class Gantt implements IVisual {
                 }
             });
 
-            const noLegendTasks = (tasksByLegend["null"] || []).concat(tasksByLegend["undefined"] || []);
+            const noLegendTasks = (tasksByLegend['null'] || []).concat(tasksByLegend['undefined'] || []);
             if (noLegendTasks.length > 0) {
                 totalLayers += this.assignLayersToTasks(noLegendTasks, totalLayers);
             }
@@ -2162,7 +2262,10 @@ export class Gantt implements IVisual {
     }
 
     private assignLayersToTasks(tasks: Task[], layerOffset: number): number {
-        if (!tasks || tasks.length === 0) { return 0; }
+        if (!tasks || tasks.length === 0) {
+            return 0;
+        }
+
         const layerEndTimes: Date[] = [];
         tasks.forEach(task => {
             let assignedLayer = -1;
@@ -2173,12 +2276,14 @@ export class Gantt implements IVisual {
                     break;
                 }
             }
+
             if (assignedLayer === -1) {
                 assignedLayer = layerEndTimes.length;
                 layerEndTimes.push(task.end);
             }
             task.layer = layerOffset + assignedLayer;
         });
+
         return layerEndTimes.length;
     }
 
@@ -2193,538 +2298,110 @@ export class Gantt implements IVisual {
 
     private reassignTaskIndicesWithLayers(groupedTasks: GroupedTask[]): void {
         let currentIndex = 0;
+
         groupedTasks.forEach(groupedTask => {
             const maxLayer = Math.max(...groupedTask.tasks.map(t => t.layer || 0));
+
             groupedTask.index = currentIndex;
+
             for (let layer = 0; layer <= maxLayer; layer++) {
                 const tasksInLayer = groupedTask.tasks.filter(t => (t.layer || 0) === layer);
+
                 if (tasksInLayer.length > 0) {
-                    tasksInLayer.forEach(task => { task.index = currentIndex; });
+                    tasksInLayer.forEach(task => {
+                        task.index = currentIndex;
+                    });
                     currentIndex++;
                 }
             }
         });
     }
 
-    // =========================================================================
-    // UPDATE
-    // =========================================================================
+    private renderAxis(xAxisProperties: IAxisProperties, duration: number = Gantt.DefaultDuration): void {
+        const dateTypeSettings: DateTypeCardSettings = this.formattingSettings.dateType;
+        const backgroundSettings: BaseBackroundSettings = this.formattingSettings.background.dateType;
 
-    public update(options: VisualUpdateOptions): void {
-        try {
-            if (!options || !options.dataViews || !options.dataViews[0]) {
-                this.clearViewport();
-                return;
-            }
+        const axisColor: string = dateTypeSettings.axisColor.value.value;
+        const axisTextColor: string = dateTypeSettings.axisTextColor.value.value;
+        const axisFontSize: number = dateTypeSettings.axisFontSize.value;
+        const axisBackgroundEnable: boolean = backgroundSettings.enable.value;
+        const axisBackgroundColor: string = backgroundSettings.color.value.value;
+        const axisBackgroundOpacity: number = backgroundSettings.opacity.value;
 
-            const collapsedTasksUpdateId: any = options.dataViews[0].metadata?.objects?.collapsedTasksUpdateId?.value;
-            if (this.collapsedTasksUpdateIDs.includes(collapsedTasksUpdateId)) {
-                this.collapsedTasksUpdateIDs = this.collapsedTasksUpdateIDs.filter(id => id !== collapsedTasksUpdateId);
-                return;
-            }
+        const xAxis = xAxisProperties.axis;
+        this.axisGroup.call(xAxis.tickSizeOuter(xAxisProperties.outerPadding));
 
-            this.updateInternal(options);
-        } catch (error) {
-            console.error(error);
-            this.eventService.renderingFailed(options, error);
-        }
+        this.axisGroup
+            .transition()
+            .duration(duration)
+            .call(xAxis);
+
+        this.axisGroup
+            .selectAll("path")
+            .style("stroke", axisColor);
+
+        this.axisGroup
+            .selectAll(".tick line")
+            .style("stroke", (timestamp: number) => this.setTickColor(timestamp, axisColor));
+
+        this.axisGroup
+            .selectAll(".tick text")
+            .style("fill", (timestamp: number) => this.setTickColor(timestamp, axisTextColor))
+            .style("font-size", axisFontSize);
+
+        this.axisBackground
+            .style("fill", axisBackgroundEnable ? axisBackgroundColor : "none")
+            .style("fill-opacity", !isNaN(axisBackgroundOpacity) ? axisBackgroundOpacity / 100 : 1);
     }
 
-    private updateInternal(options: VisualUpdateOptions): void {
-        this.formattingSettings = this.formattingSettingsService.populateFormattingSettingsModel(GanttChartSettingsModel, options.dataViews[0]);
-        this.formattingSettings.setHighContrastColors(this.colorHelper);
-        this.formattingSettings.parse();
-        this.settingsService.state.parse(this.formattingSettings.milestones.milestoneGroup.persistSettings.value);
-
-        this.sortingOptions = Gantt.getSortingOptions(options.dataViews[0]);
-        this.viewModel = this.converter(options.dataViews[0], this.sortingOptions, options.viewMode);
-
-        if (this.viewModel && this.viewModel.milestoneData) {
-            const newMilestoneData: MilestoneData = this.viewModel.milestoneData;
-            const milestonesWithoutDuplicates = Gantt.GetUniqueMilestones(newMilestoneData.dataPoints);
-
-            this.settingsService.state.setMilestonesSettings(milestonesWithoutDuplicates);
-
-            newMilestoneData.dataPoints.forEach((dataPoint: MilestoneDataPoint) => {
-                if (dataPoint.name) {
-                    const theSameUniqDataPoint: MilestoneDataPoint = milestonesWithoutDuplicates[dataPoint.name];
-                    dataPoint.color = theSameUniqDataPoint.color;
-                    dataPoint.shapeType = theSameUniqDataPoint.shapeType;
+    private setTickColor(
+        timestamp: number,
+        defaultColor: string): string {
+        const tickTime = new Date(timestamp);
+        const daysOffSettings: DaysOffCardSettings = this.formattingSettings.daysOff;
+        const firstDayOfWeek: string = daysOffSettings.firstDayOfWeek?.value?.value.toString();
+        const color: string = daysOffSettings.fill.value.value;
+        if (daysOffSettings.show.value) {
+            const dateForCheck: Date = new Date(tickTime.getTime());
+            for (let i = 0; i <= DaysInAWeekend; i++) {
+                if (dateForCheck.getDay() === +firstDayOfWeek) {
+                    return !i
+                        ? defaultColor
+                        : color;
                 }
-            });
-
-            this.viewModel.milestoneData = newMilestoneData;
-            if (this.settingsService.state.hasBeenUpdated
-                && (options.viewMode === powerbi.ViewMode.Edit || options.viewMode === powerbi.ViewMode.InFocusEdit)) {
-                this.settingsService.save();
+                dateForCheck.setDate(dateForCheck.getDate() + 1);
             }
         }
 
-        if (!this.viewModel || !this.viewModel.tasks || this.viewModel.tasks.length <= 0) {
-            this.clearViewport();
-            return;
-        }
-
-        this.viewport = structuredClone(options.viewport);
-        this.margin = Gantt.DefaultMargin;
-
-        // Reset zoom when data changes
-        if (!this.zoomState) {
-            this.zoomState = null;
-        }
-
-        this.eventService.renderingStarted(options);
-        this.render(options.dataViews[0].metadata.objects);
-        this.eventService.renderingFinished(options);
+        return defaultColor;
     }
 
-    // =========================================================================
-    // RENDER (main)
-    // =========================================================================
-
-    private render(objects: powerbi.DataViewObjects): void {
-        const settings = this.formattingSettings;
-
-        this.renderLegend();
-        this.updateChartSize();
-
-        const visibleTasks = this.viewModel.tasks.filter((task: Task) => task.visibility);
-        const tasks: Task[] = visibleTasks.map((task: Task, i: number) => {
-            task.index = i;
-            return task;
-        });
-
-        if (tasks.length < Gantt.MinTasks) { return; }
-
-        this.collapsedTasks = JSON.parse(settings.collapsedTasks.list.value);
-        const groupTasks = settings.general.groupTasks.value;
-        const layerOverlappingTasks = settings.general.overlappingTasksGroup;
-        const groupedTasks: GroupedTask[] = this.getGroupTasks(tasks, groupTasks, this.collapsedTasks, layerOverlappingTasks);
-        this.updateCommonTasks(groupedTasks);
-        this.updateCommonMilestones(groupedTasks);
-
-        const tasksAfterGrouping: Task[] = groupedTasks.flatMap(t => t.tasks);
-        const minDateTask: Task = lodashMinBy(tasksAfterGrouping, (t) => t && t.start);
-        const maxDateTask: Task = lodashMaxBy(tasksAfterGrouping, (t) => t && t.end);
-        this.hasNotNullableDates = !!minDateTask && !!maxDateTask;
-
-        // Apply zoom state if present
-        let effectiveStartDate: Date = minDateTask?.start;
-        let effectiveEndDate: Date = maxDateTask?.end;
-        if (this.zoomState) {
-            effectiveStartDate = this.zoomState.startDate;
-            effectiveEndDate = this.zoomState.endDate;
-        }
-
-        let axisLength: number = 0;
-        if (this.hasNotNullableDates) {
-            let startDate: Date = effectiveStartDate;
-            let endDate: Date = effectiveEndDate;
-
-            if (startDate.toString() === endDate.toString()) {
-                endDate = new Date(endDate.valueOf() + (24 * 60 * 60 * 1000));
-            }
-
-            const dateTypeMilliseconds: number = Gantt.getDateType(DateType[settings.dateType.type.value.value]);
-            let ticks: number = Math.ceil(Math.round(endDate.valueOf() - startDate.valueOf()) / dateTypeMilliseconds);
-            ticks = ticks < 2 ? 2 : ticks;
-
-            axisLength = ticks * Gantt.DefaultTicksLength;
-            axisLength = this.scaleAxisLength(axisLength);
-
-            const viewportIn: IViewport = { height: this.viewport.height, width: axisLength };
-            const xAxisProperties: IAxisProperties = this.calculateAxes(viewportIn, this.textProperties, startDate, endDate, ticks, false);
-            this.xAxisProperties = xAxisProperties;
-            Gantt.TimeScale = <d3TimeScale<Date, Date>>xAxisProperties.scale;
-
-            this.renderAxis(xAxisProperties);
-        }
-
-        axisLength = this.scaleAxisLength(axisLength);
-
-        this.setDimension(groupedTasks, axisLength, settings);
-
-        this.updateSvgBackgroundColor();
-
-        // ── Alternating row background (feature #12) ─────────────────────────
-        this.renderAlternatingRowBands(groupedTasks, settings);
-
-        // ── Render tasks ──────────────────────────────────────────────────────
-        this.renderTasks(groupedTasks, objects);
-
-        // ── Planned vs Actual additional bars (feature #7) ───────────────────
-        // (called inside renderTasks per task selection)
-
-        // ── Dependency connectors (feature #4) ───────────────────────────────
-        this.renderDependencies(tasks);
-
-        // ── Reference lines/bands (feature #6) ───────────────────────────────
-        this.renderReferenceBands();
-        this.renderReferenceLines();
-
-        this.updateTaskLabels(groupedTasks, settings.taskLabels.taskLabelsGroup.general.width.value);
-        this.updateElementsPositions(this.margin);
-        this.createMilestoneLine(groupedTasks);
-
-        // ── Multi-level axis (feature #2) ─────────────────────────────────────
-        if (this.hasNotNullableDates) {
-            const taskLabelsWidth = settings.taskLabels.show.value
-                ? settings.taskLabels.taskLabelsGroup.general.width.value + this.dataGridExtraWidth
-                : 0;
-            const axisTranslateX = taskLabelsWidth + this.margin.left + Gantt.SubtasksLeftMargin
-                + (settings.taskLabels.show.value ? 0 : Gantt.GroupLabelSize);
-            const ganttDiv = this.ganttDiv.node();
-            this.renderMultiLevelAxis(
-                this.zoomState ? this.zoomState.startDate : minDateTask.start,
-                this.zoomState ? this.zoomState.endDate : maxDateTask.end,
-                axisTranslateX,
-                ganttDiv.scrollTop
-            );
-        }
-
-        // ── Zoom controls (feature #3) ────────────────────────────────────────
-        const taskLabelsWidth = settings.taskLabels.show.value
-            ? settings.taskLabels.taskLabelsGroup.general.width.value + this.dataGridExtraWidth
-            : 0;
-        const axisTranslateX = taskLabelsWidth + this.margin.left + Gantt.SubtasksLeftMargin;
-        this.createZoomControls(axisTranslateX);
-
-        if (this.formattingSettings.general.scrollToCurrentTime.value && this.hasNotNullableDates) {
-            this.scrollToMilestoneLine(axisLength);
-        }
-
-        this.bindBehaviorOptions(tasks);
-    }
-
-    // =========================================================================
-    // ALTERNATING ROW BANDS  (feature #12)
-    // =========================================================================
-
-    private renderAlternatingRowBands(groupedTasks: GroupedTask[], settings: GanttChartSettingsModel): void {
-        const taskConfigHeight = settings.taskConfig.height.value || DefaultChartLineHeight;
-        const bgSettings = (settings.background as any).alternatingRows;
-        if (!bgSettings?.enable?.value) { return; }
-
-        const color: string = bgSettings.color?.value?.value || "#F5F5F5";
-        const opacity: number = (bgSettings.opacity?.value ?? 100) / 100;
-
-        // Draw in chartGroup so it scrolls with tasks
-        this.chartGroup.selectAll(".alternating-row-band").remove();
-
-        groupedTasks.forEach((group, i) => {
-            if (i % 2 !== 0) { return; } // only odd indices get color
-
-            const layerCount = group.layers.size || 1;
-            const y = Gantt.getBarYCoordinate(group.index, taskConfigHeight) + group.index * this.getResourceLabelTopMargin() - PaddingTasks;
-            const height = taskConfigHeight * layerCount + layerCount * this.getResourceLabelTopMargin();
-
-            this.chartGroup.insert("rect", ":first-child")
-                .classed("alternating-row-band", true)
-                .attr("x", -10000) // extend far left under data grid
-                .attr("y", y)
-                .attr("width", 20000)
-                .attr("height", height)
-                .style("fill", color)
-                .style("fill-opacity", opacity)
-                .style("pointer-events", "none");
-        });
-    }
-
-    // =========================================================================
-    // DATA GRID EXTRA COLUMNS  (feature #1)
-    // =========================================================================
-
-    private getDataGridColumns(): { field: string; displayName: string; width: number; visible: boolean }[] {
-        // Reads configuration from settings if available; falls back to defaults
-        const s = this.formattingSettings as any;
-        const dataGrid = s.dataGrid;
-        if (!dataGrid) { return []; } // feature not yet wired in settings → no extra columns
-
-        const columns: { field: string; displayName: string; width: number; visible: boolean }[] = [];
-
-        const addCol = (key: string, label: string, defWidth: number) => {
-            const cfg = dataGrid[key];
-            if (cfg?.show?.value !== false) {
-                columns.push({ field: key, displayName: cfg?.displayName?.value || label, width: cfg?.width?.value || defWidth, visible: true });
-            }
-        };
-
-        addCol("startDate", "Start", 70);
-        addCol("endDate", "End", 70);
-        addCol("duration", "Duration", 60);
-        addCol("completion", "Completion", 70);
-        addCol("resource", "Resource", 80);
-
-        return columns;
-    }
-
-    private renderDataGridColumns(groupedTasks: GroupedTask[], baseWidth: number, taskConfigHeight: number): void {
-        const columns = this.getDataGridColumns();
-        this.dataGridExtraWidth = columns.reduce((s, c) => s + c.width, 0);
-
-        if (!columns.length) { return; }
-
-        this.lineGroup.selectAll(".data-grid-extra-col").remove();
-
-        const formatters = this.getFormatters(this.viewModel.dataView, this.host.locale);
-        const durationUnit = <DurationUnit>this.formattingSettings.general.durationUnit.value.value.toString();
-
-        let xOffset = baseWidth;
-
-        columns.forEach(col => {
-            const colGroup = this.lineGroup.append("g")
-                .classed("data-grid-extra-col", true)
-                .attr("transform", SVGManipulations.translate(xOffset, 0));
-
-            // Header background
-            colGroup.append("rect")
-                .attr("x", 0).attr("y", this.margin.top - taskConfigHeight)
-                .attr("width", col.width).attr("height", taskConfigHeight)
-                .attr("class", Gantt.DataGridHeader.className)
-                .style("fill", "#f0f0f0")
-                .style("stroke", "#ddd");
-
-            // Header text
-            colGroup.append("text")
-                .attr("x", col.width / 2).attr("y", this.margin.top - taskConfigHeight / 2 + 4)
-                .attr("text-anchor", "middle")
-                .style("font-size", "10px")
-                .style("font-weight", "bold")
-                .style("fill", "#333")
-                .text(col.displayName);
-
-            // Cells
-            groupedTasks.forEach((group) => {
-                const task = group.tasks[0];
-                const layerCount = group.layers.size || 1;
-                const yBase = this.margin.top + Gantt.getBarYCoordinate(group.index, taskConfigHeight) + group.index * this.getResourceLabelTopMargin();
-                const cellHeight = taskConfigHeight * layerCount;
-
-                let cellText = "";
-                if (col.field === "startDate" && task.start) {
-                    cellText = formatters?.startDateFormatter.format(task.start) || "";
-                } else if (col.field === "endDate" && task.end) {
-                    cellText = formatters?.startDateFormatter.format(task.end) || "";
-                } else if (col.field === "duration" && task.duration != null) {
-                    cellText = DurationHelper.generateLabelForDuration(task.duration, durationUnit, this.localizationManager) || "";
-                } else if (col.field === "completion" && task.completion != null) {
-                    cellText = formatters?.completionFormatter.format(task.completion) || "";
-                } else if (col.field === "resource") {
-                    cellText = task.resource || "";
-                }
-
-                // Cell background (alternating)
-                const bgColor = group.index % 2 === 0 ? "#fafafa" : "#ffffff";
-                colGroup.append("rect")
-                    .attr("x", 0).attr("y", yBase)
-                    .attr("width", col.width).attr("height", cellHeight)
-                    .attr("class", Gantt.DataGridCell.className)
-                    .style("fill", bgColor)
-                    .style("stroke", "#eee");
-
-                // Cell text
-                const cellTextEl = colGroup.append("text")
-                    .attr("x", col.width / 2).attr("y", yBase + cellHeight / 2 + 4)
-                    .attr("text-anchor", "middle")
-                    .attr("class", "data-grid-cell-text")
-                    .style("font-size", "9px")
-                    .style("fill", "#333")
-                    .text(cellText);
-
-                cellTextEl.call(AxisHelper.LabelLayoutStrategy.clip, col.width - 4, textMeasurementService.svgEllipsis);
-            });
-
-            xOffset += col.width;
-        });
-    }
-
-    // =========================================================================
-    // REFERENCE LINES & BANDS  (feature #6)
-    // =========================================================================
-
-    private renderReferenceBands(): void {
-        this.referenceBandGroup.selectAll("*").remove();
-        if (!this.hasNotNullableDates) { return; }
-
-        const s = this.formattingSettings as any;
-        const bands: any[] = s.referenceLines?.bands?.value ? JSON.parse(s.referenceLines.bands.value) : [];
-        if (!bands.length) { return; }
-
-        const totalHeight = this.ganttSvg.node().clientHeight;
-        const axisX = this.chartGroup.node()
-            ? +this.chartGroup.attr("transform")?.replace(/translate\(([^,]+).*/,"$1") || 0
-            : 0;
-
-        bands.forEach((band: any) => {
-            const startDate = new Date(band.startDate);
-            const endDate = new Date(band.endDate);
-            if (!isValidDate(startDate) || !isValidDate(endDate)) { return; }
-
-            const x = Gantt.TimeScale(startDate) + axisX;
-            const width = Math.max(0, Gantt.taskDurationToWidth(startDate, endDate));
-
-            this.referenceBandGroup.append("rect")
-                .attr("x", x).attr("y", 0)
-                .attr("width", width).attr("height", totalHeight)
-                .style("fill", band.color || "#FFE4B5")
-                .style("fill-opacity", (band.opacity ?? 30) / 100)
-                .style("pointer-events", "none");
-
-            if (band.label) {
-                this.referenceBandGroup.append("text")
-                    .attr("x", x + 4).attr("y", 14)
-                    .style("font-size", "9px")
-                    .style("fill", band.color || "#888")
-                    .style("pointer-events", "none")
-                    .text(band.label);
-            }
-        });
-    }
-
-    private renderReferenceLines(): void {
-        this.referenceLineGroup.selectAll("*").remove();
-        if (!this.hasNotNullableDates) { return; }
-
-        const s = this.formattingSettings as any;
-        const lines: any[] = s.referenceLines?.lines?.value ? JSON.parse(s.referenceLines.lines.value) : [];
-        if (!lines.length) { return; }
-
-        const totalHeight = this.ganttSvg.node().clientHeight;
-        const axisX = this.chartGroup.node()
-            ? +this.chartGroup.attr("transform")?.replace(/translate\(([^,]+).*/,"$1") || 0
-            : 0;
-
-        lines.forEach((line: any) => {
-            const date = new Date(line.date);
-            if (!isValidDate(date)) { return; }
-
-            const x = Gantt.TimeScale(date) + axisX;
-            const color = line.color || "#FF6347";
-            const dashArray = line.lineType === "Solid" ? "none" : "4,4";
-
-            this.referenceLineGroup.append("line")
-                .attr("x1", x).attr("y1", 0)
-                .attr("x2", x).attr("y2", totalHeight)
-                .style("stroke", color)
-                .style("stroke-width", 1.5)
-                .style("stroke-dasharray", dashArray)
-                .style("pointer-events", "none");
-
-            if (line.label) {
-                this.referenceLineGroup.append("text")
-                    .attr("x", x + 4).attr("y", 14)
-                    .style("font-size", "9px")
-                    .style("fill", color)
-                    .style("pointer-events", "none")
-                    .text(line.label);
-            }
-        });
-    }
-
-    // =========================================================================
-    // DEPENDENCY CONNECTORS  (feature #4)
-    // =========================================================================
-
-    private renderDependencies(tasks: Task[]): void {
-        this.dependencyGroup.selectAll("*").remove();
-
-        const s = this.formattingSettings as any;
-        if (!s.connectors?.show?.value) { return; }
-        if (!this.hasNotNullableDates) { return; }
-
-        const color = s.connectors?.color?.value?.value || "#999999";
-        const lineWidth = s.connectors?.lineWidth?.value || 1;
-        const arrowSize = s.connectors?.arrowSize?.value || 6;
-
-        const deps: any[] = s.connectors?.dependencies?.value
-            ? JSON.parse(s.connectors.dependencies.value)
-            : [];
-
-        const taskConfigHeight = this.formattingSettings.taskConfig.height.value || DefaultChartLineHeight;
-
-        deps.forEach((dep: any) => {
-            const fromTask = tasks.find(t => t.name === dep.fromTaskId);
-            const toTask = tasks.find(t => t.name === dep.toTaskId);
-            if (!fromTask || !toTask) { return; }
-            if (!fromTask.end || !toTask.start) { return; }
-
-            const x1 = Gantt.TimeScale(fromTask.end);
-            const y1 = this.getTaskYCoordinateWithLayer(fromTask, taskConfigHeight) + Gantt.getBarHeight(taskConfigHeight) / 2;
-            const x2 = Gantt.TimeScale(toTask.start);
-            const y2 = this.getTaskYCoordinateWithLayer(toTask, taskConfigHeight) + Gantt.getBarHeight(taskConfigHeight) / 2;
-
-            const midX = (x1 + x2) / 2;
-
-            // Elbow path: right from end → vertical → left to start
-            const pathD = `M${x1},${y1} L${midX},${y1} L${midX},${y2} L${x2},${y2}`;
-
-            this.dependencyGroup.append("path")
-                .attr("d", pathD)
-                .attr("fill", "none")
-                .style("stroke", color)
-                .style("stroke-width", lineWidth)
-                .style("pointer-events", "none");
-
-            // Arrowhead at destination
-            const arrowPoints = `${x2},${y2} ${x2 - arrowSize},${y2 - arrowSize / 2} ${x2 - arrowSize},${y2 + arrowSize / 2}`;
-            this.dependencyGroup.append("polygon")
-                .attr("points", arrowPoints)
-                .style("fill", color)
-                .style("pointer-events", "none");
-        });
-    }
-
-    // =========================================================================
-    // CONDITIONAL FORMATTING helper  (feature #5)
-    // =========================================================================
-
-    private evalConditionalRules(task: Task): any | null {
-        const s = this.formattingSettings as any;
-        const rules: any[] = s.conditionalFormatting?.rules?.value
-            ? JSON.parse(s.conditionalFormatting.rules.value)
-            : [];
-
-        for (const rule of rules) {
-            let fieldValue: number | null = null;
-            if (rule.field === "completion") { fieldValue = task.completion != null ? task.completion * 100 : null; }
-            else if (rule.field === "duration") { fieldValue = task.duration; }
-
-            if (fieldValue == null) { continue; }
-
-            let match = false;
-            switch (rule.operator) {
-                case ">": match = fieldValue > rule.value; break;
-                case "<": match = fieldValue < rule.value; break;
-                case ">=": match = fieldValue >= rule.value; break;
-                case "<=": match = fieldValue <= rule.value; break;
-                case "=": match = fieldValue === rule.value; break;
-            }
-            if (match) { return rule; }
-        }
-        return null;
-    }
-
-    // =========================================================================
-    // TASK LABELS  (feature #1 data grid + feature #8 indentation)
-    // =========================================================================
-
+    /**
+    * Update task labels and add its tooltips
+    * @param tasks All tasks array
+    * @param width The task label width
+    */
     private updateTaskLabels(tasks: GroupedTask[], width: number): void {
         const taskLabelsShow: boolean = this.formattingSettings.taskLabels.show.value;
+
         this.updateCollapseAllGroup(taskLabelsShow);
 
         if (taskLabelsShow) {
             this.renderTaskColumnsRightLine();
             this.renderTaskLabels(tasks, width);
-
-            // Data grid extra columns (feature #1)
-            const taskConfigHeight = this.formattingSettings.taskConfig.height.value || DefaultChartLineHeight;
-            this.renderDataGridColumns(tasks, width, taskConfigHeight);
         } else {
-            this.lineGroupWrapper.attr("width", 0).attr("height", 0).attr("fill", "transparent");
-            this.lineGroupWrapperRightBorder.attr("width", 0).attr("height", 0);
-            this.lineGroup.selectAll(Gantt.Label.selectorName).remove();
-            this.lineGroup.selectAll(".data-grid-extra-col").remove();
-            this.dataGridExtraWidth = 0;
+            this.lineGroupWrapper
+                .attr("width", 0)
+                .attr("height", 0)
+                .attr("fill", "transparent");
+
+            this.lineGroupWrapperRightBorder
+                .attr("width", 0)
+                .attr("height", 0);
+
+            this.lineGroup
+                .selectAll(Gantt.Label.selectorName)
+                .remove();
         }
     }
 
@@ -2732,22 +2409,26 @@ export class Gantt implements IVisual {
         const displayGridLines: boolean = this.formattingSettings.general.displayGridLines.value;
         const taskConfigHeight: number = this.formattingSettings.taskConfig.height.value || DefaultChartLineHeight;
 
-        // Hierarchy indent (feature #8)
-        const hierarchyIndent: number = (this.formattingSettings.taskLabels.taskLabelsGroup.general as any).hierarchyIndent?.value ?? Gantt.DefaultValues.ChildTaskLeftMargin;
-
-        this.lineGroup.selectAll(Gantt.Label.selectorName).remove();
+        this.lineGroup
+            .selectAll(Gantt.Label.selectorName)
+            .remove();
 
         const axisLabel = this.lineGroup
             .selectAll<SVGGElement, GroupedTask>(Gantt.Label.selectorName)
             .data(tasks);
 
-        const axisLabelGroup = axisLabel.enter().append("g").merge(axisLabel);
+        const axisLabelGroup = axisLabel
+            .enter()
+            .append("g")
+            .merge(axisLabel);
+
         axisLabelGroup
             .classed(Gantt.Label.className, true)
-            .attr("transform", (task: GroupedTask) =>
-                SVGManipulations.translate(0, this.margin.top + this.getTaskLabelCoordinateY(task.index)));
+            .attr("transform", (task: GroupedTask) => {
+                return SVGManipulations.translate(0, this.margin.top + this.getTaskLabelCoordinateY(task.index));
+            });
 
-        this.renderClickableAreas(axisLabelGroup, width, taskConfigHeight, hierarchyIndent);
+        this.renderClickableAreas(axisLabelGroup, width, taskConfigHeight);
 
         let parentTask: string = "";
         let childrenCount = 0;
@@ -2757,26 +2438,33 @@ export class Gantt implements IVisual {
             .append("rect")
             .attr("x", (task: GroupedTask) => {
                 const isGrouped = this.formattingSettings.general.groupTasks.value;
-                const drawStandardMargin: boolean = !task.tasks[0].parent || (task.tasks[0].parent && task.tasks[0].parent !== parentTask);
+                const drawStandardMargin: boolean = !task.tasks[0].parent || task.tasks[0].parent && task.tasks[0].parent !== parentTask;
                 parentTask = task.tasks[0].parent ? task.tasks[0].parent : task.tasks[0].name;
                 if (task.tasks[0].children) {
                     parentTask = task.tasks[0].name;
                     childrenCount = isGrouped ? lodashUniqBy(task.tasks[0].children, "name").length : task.tasks[0].children.length;
                     currentChildrenIndex = 0;
                 }
-                if (task.tasks[0].parent === parentTask) { currentChildrenIndex++; }
+
+                if (task.tasks[0].parent === parentTask) {
+                    currentChildrenIndex++;
+                }
                 const isLastChild = childrenCount && childrenCount === currentChildrenIndex;
-                return drawStandardMargin || isLastChild ? Gantt.DefaultValues.ParentTaskLeftMargin : hierarchyIndent;
+                return drawStandardMargin || isLastChild ? Gantt.DefaultValues.ParentTaskLeftMargin : Gantt.DefaultValues.ChildTaskLeftMargin;
             })
             .attr("y", (task: GroupedTask) => {
                 const groupHeight = ((task.layers.size || 1) - 1) * taskConfigHeight;
-                return (task.index + 1) * this.getResourceLabelTopMargin() + (taskConfigHeight - this.formattingSettings.taskLabels.taskLabelsGroup.general.fontSize.value) / 2 + groupHeight;
+                const res = (task.index + 1) * this.getResourceLabelTopMargin() + (taskConfigHeight - this.formattingSettings.taskLabels.taskLabelsGroup.general.fontSize.value) / 2 + groupHeight;
+
+                return res;
             })
             .attr("width", () => displayGridLines ? this.viewport.width : 0)
             .attr("height", 1)
             .attr("fill", this.colorHelper.getHighContrastColor("foreground", Gantt.DefaultValues.TaskLineColor));
 
-        axisLabel.exit().remove();
+        axisLabel
+            .exit()
+            .remove();
     }
 
     static wrapText(
@@ -2792,8 +2480,8 @@ export class Gantt implements IVisual {
             const fontFamily = computedStyle.fontFamily;
             const maxLines = Math.floor(maxHeight * 0.8 / (fontSize * 1.2)) || 1;
 
-            textElement.selectAll("tspan").remove();
-            textElement.text("");
+            textElement.selectAll('tspan').remove();
+            textElement.text('');
 
             const textProps: TextProperties = {
                 fontFamily: fontFamily,
@@ -2808,56 +2496,52 @@ export class Gantt implements IVisual {
 
             for (let i = 0; i < words.length; i++) {
                 line.push(words[i]);
-                textProps.text = line.join(" ");
+                textProps.text = line.join(' ');
                 const lineWidth = textMeasurementService.measureSvgTextWidth(textProps);
 
                 if (lineWidth > maxWidth && line.length > 1) {
                     line.pop();
-                    const lineText = line.join(" ");
+                    const lineText = line.join(' ');
 
                     if (lineNumber < maxLines - 1) {
                         textProps.text = lineText;
                         const truncatedText = textMeasurementService.getTailoredTextOrDefault(textProps, maxWidth);
-                        textElement.append("tspan")
-                            .attr("x", textElement.attr("x"))
-                            .attr("dy", lineNumber === 0 ? 0 : lineHeight)
+                        textElement.append('tspan')
+                            .attr('x', textElement.attr('x'))
+                            .attr('dy', lineNumber === 0 ? 0 : lineHeight)
                             .text(truncatedText);
+
                         line = [words[i]];
                         lineNumber++;
                     } else {
-                        textProps.text = lineText + " " + words.slice(i).join(" ");
+                        textProps.text = lineText + ' ' + words.slice(i).join(' ');
                         const truncatedText = textMeasurementService.getTailoredTextOrDefault(textProps, maxWidth);
-                        textElement.append("tspan")
-                            .attr("x", textElement.attr("x"))
-                            .attr("dy", lineNumber === 0 ? 0 : lineHeight)
+                        textElement.append('tspan')
+                            .attr('x', textElement.attr('x'))
+                            .attr('dy', lineNumber === 0 ? 0 : lineHeight)
                             .text(truncatedText);
-                        textElement.selectChild("tspan").attr("dy", -((lineNumber) * lineHeight) / 2);
+                        textElement.selectChild("tspan").attr('dy', -((lineNumber) * lineHeight) / 2);
                         return;
                     }
                 }
             }
 
             if (lineNumber < maxLines && line.length > 0) {
-                textProps.text = line.join(" ");
+                textProps.text = line.join(' ');
                 const finalWidth = textMeasurementService.measureSvgTextWidth(textProps);
                 const finalText = finalWidth > maxWidth
                     ? textMeasurementService.getTailoredTextOrDefault(textProps, maxWidth)
                     : textProps.text;
-                textElement.append("tspan")
-                    .attr("x", textElement.attr("x"))
-                    .attr("dy", lineNumber === 0 ? 0 : lineHeight)
+                textElement.append('tspan')
+                    .attr('x', textElement.attr('x'))
+                    .attr('dy', lineNumber === 0 ? 0 : lineHeight)
                     .text(finalText);
-                textElement.selectChild("tspan").attr("dy", -((lineNumber) * lineHeight) / 2);
+                textElement.selectChild("tspan").attr('dy', -((lineNumber) * lineHeight) / 2);
             }
         });
     }
 
-    private renderClickableAreas(
-        axisLabelGroup: d3Selection<SVGGElement, GroupedTask, any, any>,
-        width: number,
-        taskConfigHeight: number,
-        hierarchyIndent: number = Gantt.DefaultValues.ChildTaskLeftMargin
-    ) {
+    private renderClickableAreas(axisLabelGroup: d3Selection<SVGGElement, GroupedTask, any, any>, width: number, taskConfigHeight: number) {
         const clickableArea = axisLabelGroup
             .append("g")
             .classed(Gantt.ClickableArea.className, true)
@@ -2867,45 +2551,48 @@ export class Gantt implements IVisual {
         const useCustom: boolean = nestedLabels.customize.value;
         const height = this.formattingSettings.taskConfig.height.value || DefaultChartLineHeight;
 
-        // ── Row selection background (feature #9) ─────────────────────────────
-        const selectionRowColor = (this.formattingSettings.taskConfig as any).selectionRowColor?.value?.value || "#E8F4FE";
-
-        axisLabelGroup.insert("rect", ":first-child")
-            .classed(Gantt.RowSelectionBg.className, true)
-            .attr("x", 0)
-            .attr("y", (task: GroupedTask) => {
-                const groupHeight = ((task.layers.size || 1) - 1) * taskConfigHeight;
-                return (task.index + (task.layers.size || 0) + 0.5) * this.getResourceLabelTopMargin() + groupHeight / 2 - taskConfigHeight / 2;
-            })
-            .attr("width", width)
-            .attr("height", taskConfigHeight)
-            .style("fill", "transparent");
-
         clickableArea
             .append("text")
             .attr("x", (task: GroupedTask) => (Gantt.TaskLineCoordinateX +
-                (task.tasks.every((t: Task) => !!t.parent)
-                    ? hierarchyIndent
+                (task.tasks.every((task: Task) => !!task.parent)
+                    ? Gantt.SubtasksLeftMargin
                     : (task.tasks[0].children && !!task.tasks[0].children.length) ? this.parentLabelOffset : 0)))
             .attr("class", (task: GroupedTask) => task.tasks[0].children ? "parent" : task.tasks[0].parent ? "child" : "normal-node")
             .style("font-weight", (task: GroupedTask) => {
                 const isParent = !!task.tasks[0].children;
                 const isChild = !!task.tasks[0].parent;
-                if (isParent) { return general.bold.value ? "900" : "700"; }
-                if (isChild && useCustom) { return nestedLabels.bold.value ? "700" : "400"; }
+
+                if (isParent) {
+                    return general.bold.value ? "900" : "700";
+                }
+
+                if (isChild && useCustom) {
+                    return nestedLabels.bold.value ? "700" : "400";
+                }
+
                 return general.bold.value ? "700" : "400";
             })
             .style("font-size", (task: GroupedTask) => {
                 const isChild: boolean = !!task.tasks[0].parent;
-                return PixelConverter.fromPoint(isChild && useCustom ? nestedLabels.fontSize.value : general.fontSize.value);
+                return PixelConverter.fromPoint(isChild && useCustom
+                    ? nestedLabels.fontSize.value
+                    : general.fontSize.value
+                )
             })
             .style("font-family", (task: GroupedTask) => {
                 const isChild: boolean = !!task.tasks[0].parent;
-                return isChild && useCustom ? nestedLabels.fontFamily.value : general.fontFamily.value;
+                return isChild && useCustom
+                    ? nestedLabels.fontFamily.value
+                    : general.fontFamily.value;
             })
             .style("font-style", (task: GroupedTask) => {
                 const isChild: boolean = !!task.tasks[0].parent;
-                if (isChild) { return useCustom ? (nestedLabels.italic.value ? "italic" : "normal") : "italic"; }
+
+                if (isChild) {
+                    return useCustom
+                        ? nestedLabels.italic.value ? "italic" : "normal"
+                        : "italic";
+                }
                 return general.italic.value ? "italic" : "normal";
             })
             .style("text-decoration", (task: GroupedTask) => {
@@ -2921,6 +2608,7 @@ export class Gantt implements IVisual {
             })
             .attr("fill", (task: GroupedTask) => {
                 const isChild: boolean = !!task.tasks[0].parent;
+
                 return isChild && useCustom
                     ? this.colorHelper.getHighContrastColor("foreground", nestedLabels.fill.value.value)
                     : this.colorHelper.getHighContrastColor("foreground", general.fill.value.value);
@@ -2960,47 +2648,70 @@ export class Gantt implements IVisual {
         clickableArea.classed("pointerCursor", (task: GroupedTask) => task.tasks[0].children && !!task.tasks[0].children.length);
 
         const buttonPlusMinusColor = this.colorHelper.getHighContrastColor("foreground", Gantt.DefaultValues.PlusMinusColor);
-        buttonSelection.each(function (task: GroupedTask) {
-            const element = d3Select(this);
-            if (!task.tasks[0].children[0].visibility) {
-                drawPlusButton(element, buttonPlusMinusColor);
-            } else {
-                drawMinusButton(element, buttonPlusMinusColor);
-            }
-        });
+        buttonSelection
+            .each(function (task: GroupedTask) {
+                const element = d3Select(this);
+                if (!task.tasks[0].children[0].visibility) {
+                    drawPlusButton(element, buttonPlusMinusColor);
+                } else {
+                    drawMinusButton(element, buttonPlusMinusColor);
+                }
+            });
     }
 
     private renderTaskColumnsRightLine() {
-        const taskLabelsWidth: number = this.formattingSettings.taskLabels.taskLabelsGroup.general.width.value + this.dataGridExtraWidth;
+        const taskLabelsWidth: number = this.formattingSettings.taskLabels.taskLabelsGroup.general.width.value;
         const backgroundSettings: BaseBackroundSettings = this.formattingSettings.background.categoryLabels;
 
         const getGanttSVGRectHeight = (element: SVGRectElement): number => {
             const y = parseFloat(element.getAttribute("y")) || 0;
-            return this.ganttSvg.node().clientHeight - y;
+            const ganttDivHeight = this.ganttSvg.node().clientHeight;
+            const newHeight = ganttDivHeight - y;
+            return newHeight;
         };
 
         this.lineGroupWrapper
             .attr("width", taskLabelsWidth)
-            .attr("height", (_, i, nodes) => getGanttSVGRectHeight(nodes[i]))
+            .attr("height", (_, i, nodes) => {
+                const element = nodes[i];
+                return getGanttSVGRectHeight(element);
+            })
             .attr("stroke", this.colorHelper.getHighContrastColor("foreground", Gantt.DefaultValues.TaskLineColor))
             .attr("stroke-width", 1)
-            .attr("fill", backgroundSettings.enable.value ? backgroundSettings.color.value?.value : "none")
-            .attr("fill-opacity", !isNaN(backgroundSettings.opacity.value / 100) ? backgroundSettings.opacity.value / 100 : 1);
+            .attr("fill", backgroundSettings.enable.value
+                ? backgroundSettings.color.value?.value
+                : "none"
+            )
+            .attr("fill-opacity", !isNaN(backgroundSettings.opacity.value / 100)
+                ? backgroundSettings.opacity.value / 100
+                : 1
+            );
 
         this.lineGroupWrapperRightBorder
             .attr("x", taskLabelsWidth - 5)
             .attr("width", 11)
-            .attr("height", (_, i, nodes) => getGanttSVGRectHeight(nodes[i]));
+            .attr("height", (_, i, nodes) => {
+                const element = nodes[i];
+                return getGanttSVGRectHeight(element);
+            });
     }
 
     private updateCollapseAllGroup(taskLabelShow: boolean) {
-        this.collapseAllGroup.selectAll("svg").remove();
-        this.collapseAllGroup.selectAll("rect").remove();
-        this.collapseAllGroup.selectAll("text").remove();
+        this.collapseAllGroup
+            .selectAll("svg")
+            .remove();
+
+        this.collapseAllGroup
+            .selectAll("rect")
+            .remove();
+
+        this.collapseAllGroup
+            .selectAll("text")
+            .remove();
 
         if (this.viewModel.isParentFilled) {
             const categoryLabelsWidth: number = Gantt.CollapseAllBackgroundWidthPadding + (taskLabelShow
-                ? this.formattingSettings.taskLabels.taskLabelsGroup.general.width.value + this.dataGridExtraWidth
+                ? this.formattingSettings.taskLabels.taskLabelsGroup.general.width.value
                 : Gantt.GroupLabelSize);
 
             const backgroundSettings: BaseBackroundSettings = this.formattingSettings.background.dateType;
@@ -3010,8 +2721,14 @@ export class Gantt implements IVisual {
                 .attr("width", categoryLabelsWidth)
                 .attr("x", -1)
                 .attr("height", Gantt.AxisBackgroundHeight)
-                .attr("fill", backgroundSettings.enable.value ? backgroundSettings.color.value.value : "none")
-                .attr("fill-opacity", !isNaN(backgroundSettings.opacity.value / 100) ? backgroundSettings.opacity.value / 100 : 1);
+                .attr("fill", backgroundSettings.enable.value
+                    ? backgroundSettings.color.value.value
+                    : "none"
+                )
+                .attr("fill-opacity", !isNaN(backgroundSettings.opacity.value / 100)
+                    ? backgroundSettings.opacity.value / 100
+                    : 1
+                );
 
             const expandCollapseButton = this.collapseAllGroup
                 .append("svg")
@@ -3019,9 +2736,8 @@ export class Gantt implements IVisual {
                 .attr("tabindex", 1)
                 .attr("role", "option")
                 .attr("focusable", true)
-                .attr("aria-label", this.collapsedTasks.length
-                    ? this.localizationManager.getDisplayName("Visual_Expand_All")
-                    : this.localizationManager.getDisplayName("Visual_Collapse_All"))
+                .attr("role", "option")
+                .attr("aria-label", this.collapsedTasks.length ? this.localizationManager.getDisplayName("Visual_Expand_All") : this.localizationManager.getDisplayName("Visual_Collapse_All"))
                 .attr("viewBox", "0 0 48 48")
                 .attr("width", Gantt.GroupLabelSize)
                 .attr("height", Gantt.GroupLabelSize)
@@ -3064,39 +2780,131 @@ export class Gantt implements IVisual {
                     .style("text-decoration", settings.underline.value ? "underline" : "none")
                     .style("fill", this.colorHelper.getHighContrastColor("foreground", settings.fill.value.value))
                     .text(text)
-                    .call(AxisHelper.LabelLayoutStrategy.clip,
-                        this.formattingSettings.taskLabels.taskLabelsGroup.general.width.value - Gantt.GroupLabelSize - Gantt.CollapseAllBackgroundWidthPadding,
-                        textMeasurementService.svgEllipsis)
-                    .attr("aria-label", this.collapsedTasks.length
-                        ? this.localizationManager.getDisplayName("Visual_Expand_All")
-                        : this.localizationManager.getDisplayName("Visual_Collapse_All"));
+                    .call(AxisHelper.LabelLayoutStrategy.clip, this.formattingSettings.taskLabels.taskLabelsGroup.general.width.value - Gantt.GroupLabelSize - Gantt.CollapseAllBackgroundWidthPadding, textMeasurementService.svgEllipsis)
+                    .attr("aria-label", this.collapsedTasks.length ? this.localizationManager.getDisplayName("Visual_Expand_All") : this.localizationManager.getDisplayName("Visual_Collapse_All"));
             }
         }
     }
 
-    // =========================================================================
-    // TASK RENDERING
-    // =========================================================================
+    /**
+     * callback for subtasks click event
+     * @param taskClicked Grouped clicked task
+     */
+    private subTasksCollapseCb(taskClicked: GroupedTask): void {
+        const taskIsChild: boolean = taskClicked.tasks[0].parent && !taskClicked.tasks[0].children;
+        const taskWithoutParentAndChildren: boolean = !taskClicked.tasks[0].parent && !taskClicked.tasks[0].children;
+        if (taskIsChild || taskWithoutParentAndChildren) {
+            return;
+        }
 
+        const taskClickedParent: string = taskClicked.tasks[0].parent || taskClicked.tasks[0].name;
+        this.viewModel.tasks.forEach((task: Task) => {
+            if (task.parent === taskClickedParent &&
+                task.parent.length >= taskClickedParent.length) {
+                const index: number = this.collapsedTasks.indexOf(task.parent);
+                if (task.visibility) {
+                    this.collapsedTasks.push(task.parent);
+                } else {
+                    if (taskClickedParent === task.parent) {
+                        this.collapsedTasks.splice(index, 1);
+                    }
+                }
+            }
+        });
+
+        const newId = crypto.randomUUID();
+        this.collapsedTasksUpdateIDs.push(newId);
+
+        this.setJsonFiltersValues(this.collapsedTasks, newId);
+    }
+
+    /**
+     * callback for subtasks collapse all click event
+     */
+    private subTasksCollapseAll(): void {
+        const collapsedAllSelector = this.collapseAllGroup.select(Gantt.CollapseAllArrow.selectorName);
+        const isCollapsed: string = collapsedAllSelector.attr(this.collapseAllFlag);
+        const buttonExpandCollapseColor = this.colorHelper.getHighContrastColor("foreground", Gantt.DefaultValues.CollapseAllColor);
+
+        collapsedAllSelector.selectAll("path").remove();
+        if (isCollapsed === "1") {
+            this.collapsedTasks = [];
+            collapsedAllSelector.attr(this.collapseAllFlag, "0");
+            drawCollapseButton(collapsedAllSelector, buttonExpandCollapseColor);
+
+        } else {
+            collapsedAllSelector.attr(this.collapseAllFlag, "1");
+            drawExpandButton(collapsedAllSelector, buttonExpandCollapseColor);
+            this.viewModel.tasks.forEach((task: Task) => {
+                if (task.parent) {
+                    if (task.visibility) {
+                        this.collapsedTasks.push(task.parent);
+                    }
+                }
+            });
+        }
+
+        const newId = crypto.randomUUID();
+        this.collapsedTasksUpdateIDs.push(newId);
+
+        this.setJsonFiltersValues(this.collapsedTasks, newId);
+    }
+
+    private setJsonFiltersValues(collapsedValues: string[], collapsedTasksUpdateId: string) {
+        this.host.persistProperties(<VisualObjectInstancesToPersist>{
+            merge: [{
+                objectName: "collapsedTasks",
+                selector: null,
+                properties: {
+                    list: JSON.stringify(collapsedValues)
+                }
+            }, {
+                objectName: "collapsedTasksUpdateId",
+                selector: null,
+                properties: {
+                    value: JSON.stringify(collapsedTasksUpdateId)
+                }
+            }]
+        });
+    }
+
+    private updateSvgBackgroundColor(): void {
+        const background: BaseBackroundSettings = this.formattingSettings.background.general;
+        const backgroundEnable = background.enable.value;
+        const color = background.color.value.value;
+        const opacity = background.opacity.value;
+
+        this.ganttSvgBackground
+            .attr("fill", backgroundEnable ? color : "none")
+            .attr("fill-opacity", !isNaN(opacity) ? opacity / 100 : 1);
+    }
+
+    /**
+     * Render tasks
+     * @param groupedTasks Grouped tasks
+     */
     private renderTasks(groupedTasks: GroupedTask[], objects: powerbi.DataViewObjects): void {
         const taskConfigHeight: number = this.formattingSettings.taskConfig.height.value || DefaultChartLineHeight;
         const shouldRenderLines: boolean = this.formattingSettings.general.overlappingTasksGroup.displayGroupedTaskGridLines.value;
         const generalBarsRoundedCorners: boolean = this.formattingSettings.general.barsRoundedCorners.value;
-
         const taskGroupSelection = this.taskGroup
             .selectAll<SVGGElement, GroupedTask>(Gantt.TaskGroup.selectorName)
             .data(groupedTasks);
 
-        taskGroupSelection.exit().remove();
+        taskGroupSelection
+            .exit()
+            .remove();
 
+        // render task group container
         const taskGroupSelectionMerged = taskGroupSelection
-            .enter().append("g").merge(taskGroupSelection);
+            .enter()
+            .append("g")
+            .merge(taskGroupSelection);
 
         taskGroupSelectionMerged.classed(Gantt.TaskGroup.className, true);
 
         const taskSelection = this.taskSelectionRectRender(taskGroupSelectionMerged, shouldRenderLines);
         this.taskMainRectRender(taskSelection, taskConfigHeight, generalBarsRoundedCorners, this.formattingSettings.taskConfig);
-        this.taskPlannedRectRender(taskSelection, taskConfigHeight);  // feature #7
         this.MilestonesRender(taskSelection, taskConfigHeight);
         this.taskProgressRender(taskSelection);
         this.taskDaysOffRender(taskSelection, taskConfigHeight);
@@ -3105,46 +2913,13 @@ export class Gantt implements IVisual {
         this.renderTooltip(taskSelection);
     }
 
-    // ─── Planned vs Actual bars  (feature #7) ────────────────────────────────
 
-    private taskPlannedRectRender(
-        taskSelection: d3Selection<SVGGElement, Task, SVGGElement | BaseType, Layer>,
-        taskConfigHeight: number): void {
-
-        const s = this.formattingSettings as any;
-        if (!s.taskConfig?.showPlanned?.value) { return; }
-
-        const plannedColor = s.taskConfig?.plannedFill?.value?.value || "#AAAAAA";
-        const plannedBarHeight = Gantt.getBarHeight(taskConfigHeight) * 0.35;
-
-        taskSelection.selectAll(Gantt.TaskPlannedRect.selectorName).remove();
-
-        const taskPlanned = taskSelection
-            .selectAll<SVGPathElement, Task>(Gantt.TaskPlannedRect.selectorName)
-            .data((d: Task) => [d]);
-
-        const taskPlannedMerged = taskPlanned.enter().append("path").merge(taskPlanned);
-        taskPlannedMerged.classed(Gantt.TaskPlannedRect.className, true);
-
-        taskPlannedMerged.attr("d", (task: Task) => {
-            if (!this.hasNotNullableDates) { return ""; }
-            const pStart: Date = (task as any).plannedStart;
-            const pEnd: Date = (task as any).plannedEnd;
-            if (!pStart || !pEnd || !isValidDate(pStart) || !isValidDate(pEnd)) { return ""; }
-
-            const x = Gantt.TimeScale(pStart);
-            const y = this.getTaskYCoordinateWithLayer(task, taskConfigHeight) + Gantt.getBarHeight(taskConfigHeight) - plannedBarHeight;
-            const w = Math.max(0, Gantt.taskDurationToWidth(pStart, pEnd));
-            return drawNotRoundedRectByPath(x, y, w, plannedBarHeight);
-        })
-        .style("fill", plannedColor)
-        .style("opacity", 0.55);
-
-        taskPlanned.exit().remove();
-    }
-
-    // ─── Common task structures ───────────────────────────────────────────────
-
+    /**
+     * Change task structure to be able for
+     * Rendering common tasks when all the children of current parent are collapsed
+     * used only the Grouping mode is OFF
+     * @param groupedTasks Grouped tasks
+     */
     private updateCommonTasks(groupedTasks: GroupedTask[]): void {
         if (!this.formattingSettings.general.groupTasks.value) {
             groupedTasks.forEach((groupedTask: GroupedTask) => {
@@ -3154,24 +2929,32 @@ export class Gantt implements IVisual {
                     const tasks = groupedTask.tasks;
                     tasks.forEach((task: Task) => {
                         if (task.children) {
-                            const childrenColors = task.children.map((child: Task) => child.color).filter(c => c);
-                            const minChildDateStart = lodashMin(task.children.map((child: Task) => child.start).filter(d => d));
-                            const maxChildDateEnd = lodashMax(task.children.map((child: Task) => child.end).filter(d => d));
+                            const childrenColors = task.children.map((child: Task) => child.color).filter((color) => color);
+                            const minChildDateStart = lodashMin(task.children.map((child: Task) => child.start).filter((dateStart) => dateStart));
+                            const maxChildDateEnd = lodashMax(task.children.map((child: Task) => child.end).filter((dateStart) => dateStart));
                             firstTask.color = !firstTask.color && task.children ? childrenColors[0] : firstTask.color;
                             firstTask.start = lodashMin([firstTask.start, minChildDateStart]);
                             firstTask.end = <any>lodashMax([firstTask.end, maxChildDateEnd]);
                         }
                     });
+
                     groupedTask.tasks = firstTask && [firstTask] || [];
                 }
             });
         }
     }
 
+    /**
+     * Change task structure to be able for
+     * Rendering common milestone when all the children of current parent are collapsed
+     * used only the Grouping mode is OFF
+     * @param groupedTasks Grouped tasks
+     */
     private updateCommonMilestones(groupedTasks: GroupedTask[]): void {
         groupedTasks.forEach((groupedTask: GroupedTask) => {
             const currentTaskName: string = groupedTask.name;
             if (this.collapsedTasks.includes(currentTaskName)) {
+
                 const lastTask: Task = groupedTask.tasks && groupedTask.tasks[groupedTask.tasks.length - 1];
                 const tasks = groupedTask.tasks;
                 tasks.forEach((task: Task) => {
@@ -3187,29 +2970,41 @@ export class Gantt implements IVisual {
         });
     }
 
+    /**
+     * Render task progress rect
+     * @param taskGroupSelection Task Group Selection
+     */
     private taskSelectionRectRender(taskGroupSelection: d3Selection<SVGGElement, GroupedTask, SVGGElement, null>, shouldRenderLines: boolean) {
         const taskLineSelection = taskGroupSelection
             .selectAll(".task-line")
             .data((d: GroupedTask) => {
                 if (d.layers && d.layers.size > 0) {
-                    return Array.from(d.layers.entries()).map(([layerIndex, tasks]) => ({ index: layerIndex, tasks } as Layer));
+                    return Array.from(d.layers.entries()).map(([layerIndex, tasks]) => ({
+                        index: layerIndex,
+                        tasks
+                    } as Layer));
                 }
-                return [{ index: 0, tasks: d.tasks }];
+                return [{
+                    index: 0,
+                    tasks: d.tasks
+                }];
             })
             .join("g")
             .classed("task-line", true);
 
         this.renderGroupedTaskGridLines(taskLineSelection, shouldRenderLines);
 
-        return taskLineSelection
+        const taskSelection = taskLineSelection
             .selectAll<SVGGElement, Task>(Gantt.SingleTask.selectorName)
             .data((d: Layer) => d.tasks)
             .join("g")
             .classed(Gantt.SingleTask.className, true);
+
+        return taskSelection;
     }
 
     private renderGroupedTaskGridLines(taskLinesSelection: d3Selection<SVGGElement | BaseType, Layer, SVGGElement, GroupedTask>, shouldRenderLines: boolean) {
-        return taskLinesSelection
+        const taskLineRectSelection = taskLinesSelection
             .selectAll(".task-rect")
             .data((d: Layer) => d.index === 0 ? [] : [d])
             .join("rect")
@@ -3225,29 +3020,54 @@ export class Gantt implements IVisual {
             })
             .attr("width", "100%")
             .attr("fill", "#ccc");
+
+        return taskLineRectSelection;
     }
 
+    /**
+     * @param task
+     */
     private getTaskRectWidth(task: Task): number {
         const taskIsCollapsed = this.collapsedTasks.includes(task.name);
-        if (this.hasNotNullableDates && (taskIsCollapsed || lodashIsEmpty(task.Milestones)) && task.start != null && task.end != null) {
+
+        if (this.hasNotNullableDates &&
+            (taskIsCollapsed || lodashIsEmpty(task.Milestones)) &&
+            (task.start != null && task.end != null)
+        ) {
             return Gantt.taskDurationToWidth(task.start, task.end);
         }
+
         return 0;
     }
 
+
+    /**
+     *
+     * @param task
+     * @param taskConfigHeight
+     * @param barsRoundedCorners are bars with rounded corners
+     */
     private drawTaskRect(task: Task, taskConfigHeight: number, barsRoundedCorners: boolean): string {
-        const x = this.hasNotNullableDates ? Gantt.TimeScale(task.start) : 0;
-        const y = this.getTaskYCoordinateWithLayer(task, taskConfigHeight);
-        const width = this.getTaskRectWidth(task);
-        const height = Gantt.getBarHeight(taskConfigHeight);
-        const radius = Gantt.RectRound;
+        const x = this.hasNotNullableDates ? Gantt.TimeScale(task.start) : 0,
+            y = this.getTaskYCoordinateWithLayer(task, taskConfigHeight),
+            width = this.getTaskRectWidth(task),
+            height = Gantt.getBarHeight(taskConfigHeight),
+            radius = Gantt.RectRound;
+
 
         if (barsRoundedCorners && width >= 2 * radius) {
             return drawRoundedRectByPath(x, y, width, height, radius);
         }
+
         return drawNotRoundedRectByPath(x, y, width, height);
     }
 
+    /**
+     * Render task progress rect
+     * @param taskSelection Task Selection
+     * @param taskConfigHeight Task heights from settings
+     * @param barsRoundedCorners are bars with rounded corners
+     */
     private taskMainRectRender(
         taskSelection: d3Selection<SVGGElement, Task, SVGGElement | BaseType, Layer>,
         taskConfigHeight: number,
@@ -3260,26 +3080,36 @@ export class Gantt implements IVisual {
             .selectAll<SVGPathElement, Task>(Gantt.TaskRect.selectorName)
             .data((d: Task) => [d]);
 
-        const taskRectMerged = taskRect.enter().append("path").merge(taskRect);
-        taskRectMerged.classed(Gantt.TaskRect.className, true);
+        const taskRectMerged = taskRect
+            .enter()
+            .append("path")
+            .merge(taskRect);
+
+        taskRectMerged.classed(Gantt.TaskRect.className, true)
 
         let index = 0, groupedTaskIndex = 0;
         taskRectMerged
             .attr("d", (task: Task) => this.drawTaskRect(task, taskConfigHeight, barsRoundedCorners))
             .attr("width", (task: Task) => this.getTaskRectWidth(task))
             .style("fill", (task: Task) => {
-                // Conditional formatting  (feature #5)
-                const rule = this.evalConditionalRules(task);
-                if (rule?.barColor) { return rule.barColor; }
-
-                if (index === task.index) { groupedTaskIndex++; }
-                else { groupedTaskIndex = 0; index = task.index; }
+                // logic used for grouped tasks, when there are several bars related to one category
+                if (index === task.index) {
+                    groupedTaskIndex++;
+                } else {
+                    groupedTaskIndex = 0;
+                    index = task.index;
+                }
 
                 const url = `${task.index}-${groupedTaskIndex}-${isStringNotNullEmptyOrUndefined(task.taskType) ? task.taskType.toString() : "taskType"}`;
-                return `url(#${`task${hashCode(url)}`})`;
+                const encodedUrl = `task${hashCode(url)}`;
+
+                return `url(#${encodedUrl})`;
             })
             .style("stroke", (task: Task) => {
-                if (!task.color) { return task.color; }
+                if (!task.color) {
+                    return task.color
+                }
+
                 const parsedColor = parseColorString(task.color);
                 const darkenedColor = darken(parsedColor, 50);
                 return rgbString(darkenedColor);
@@ -3296,51 +3126,106 @@ export class Gantt implements IVisual {
             const node = d3Select(this);
             const width = Number(node.attr("width"));
             if (isNaN(width) || width === 0) {
-                node.attr("focusable", null).attr("tabindex", null).attr("role", null).attr("aria-label", null);
+                node.attr("focusable", null);
+                node.attr("tabindex", null)
+                node.attr("role", null);
+                node.attr("aria-label", null);
             } else {
-                node.attr("focusable", true).attr("tabindex", 2).attr("role", "option").attr("aria-label", d.name);
+                node.attr("focusable", true);
+                node.attr("tabindex", 2);
+                node.attr("role", "option");
+                node.attr("aria-label", d.name);
             }
         });
 
-        taskRect.exit().remove();
+        taskRect
+            .exit()
+            .remove();
     }
 
+    /**
+     *
+     * @param milestoneType milestone type
+     */
     private getMilestoneColor(milestoneType: string): string {
-        const milestone: MilestoneDataPoint = this.viewModel.milestoneData.dataPoints.find((dp: MilestoneDataPoint) => dp.name === milestoneType);
+        const milestone: MilestoneDataPoint = this.viewModel.milestoneData.dataPoints.find((dataPoint: MilestoneDataPoint) => dataPoint.name === milestoneType);
+
         return this.colorHelper.getHighContrastColor("foreground", milestone.color);
     }
 
     private getMilestonePath(milestoneType: string, taskConfigHeight: number): string {
+        let shape: string;
         const convertedHeight: number = Gantt.getBarHeight(taskConfigHeight);
-        const milestone: MilestoneDataPoint = this.viewModel.milestoneData.dataPoints.find((dp: MilestoneDataPoint) => dp.name === milestoneType);
+        const milestone: MilestoneDataPoint = this.viewModel.milestoneData.dataPoints.find((dataPoint: MilestoneDataPoint) => dataPoint.name === milestoneType);
         switch (milestone.shapeType) {
-            case MilestoneShape.Rhombus: return drawDiamond(convertedHeight);
-            case MilestoneShape.Square: return drawRectangle(convertedHeight);
-            case MilestoneShape.Circle: return drawCircle(convertedHeight);
+            case MilestoneShape.Rhombus:
+                shape = drawDiamond(convertedHeight);
+                break;
+            case MilestoneShape.Square:
+                shape = drawRectangle(convertedHeight);
+                break;
+            case MilestoneShape.Circle:
+                shape = drawCircle(convertedHeight);
         }
+
+        return shape;
     }
 
+    /**
+     * Render milestones
+     * @param taskSelection Task Selection
+     * @param taskConfigHeight Task heights from settings
+     */
     private MilestonesRender(
         taskSelection: d3Selection<SVGGElement, Task, SVGGElement | BaseType, Layer>,
         taskConfigHeight: number): void {
-
         const taskMilestones = taskSelection
-            .selectAll<SVGGElement, { key: number; values: MilestonePath[]; task: Task; }>(Gantt.TaskMilestone.selectorName)
+            .selectAll<SVGGElement, {
+                key: number;
+                values: MilestonePath[];
+                task: Task;
+            }>(Gantt.TaskMilestone.selectorName)
             .data((d: Task) => {
-                const nestedByDate = d3Nest<Milestone>().key((m: Milestone) => m.start.toDateString()).entries(d.Milestones);
+                const nestedByDate: {
+                    key: string;
+                    values: Milestone[];
+                    value: undefined;
+                }[] = d3Nest<Milestone>().key((d: Milestone) => d.start.toDateString()).entries(d.Milestones);
+
                 const updatedMilestones: MilestonePath[] = nestedByDate.map((nestedObj) => {
                     const oneDateMilestones: Milestone[] = nestedObj.values;
+                    // if there is 2 or more milestones for concrete date => draw only one milestone for concrete date, but with tooltip for all of them
                     const currentMilestone = [...oneDateMilestones].pop();
-                    const allTooltipInfo = oneDateMilestones.map((m: MilestonePath) => m.tooltipInfo);
+                    const allTooltipInfo = oneDateMilestones.map((milestone: MilestonePath) => milestone.tooltipInfo);
                     currentMilestone.tooltipInfo = allTooltipInfo.reduce((a, b) => a.concat(b), []);
-                    return { taskID: d.index, type: currentMilestone.type, start: currentMilestone.start, tooltipInfo: currentMilestone.tooltipInfo };
+
+                    return {
+                        taskID: d.index,
+                        type: currentMilestone.type,
+                        start: currentMilestone.start,
+                        tooltipInfo: currentMilestone.tooltipInfo,
+                    };
                 });
-                return [{ key: d.index, values: <MilestonePath[]>updatedMilestones, task: d }];
+
+                return [{
+                    key: d.index,
+                    values: <MilestonePath[]>updatedMilestones,
+                    task: d
+                }];
             });
 
-        taskMilestones.exit().remove();
-        const taskMilestonesAppend = taskMilestones.enter().append("g");
-        const taskMilestonesMerged = taskMilestonesAppend.merge(taskMilestones);
+
+        taskMilestones
+            .exit()
+            .remove();
+
+        const taskMilestonesAppend = taskMilestones
+            .enter()
+            .append("g");
+
+        const taskMilestonesMerged = taskMilestonesAppend
+            .merge(taskMilestones);
+
         taskMilestonesMerged.classed(Gantt.TaskMilestone.className, true);
 
         const transformForMilestone = (task: Task, start: Date) => {
@@ -3350,9 +3235,17 @@ export class Gantt implements IVisual {
 
         const taskMilestonesSelection = taskMilestonesMerged.selectAll("path");
         const taskMilestonesSelectionData = taskMilestonesSelection.data(milestonesData => milestonesData.values);
-        const taskMilestonesSelectionAppend = taskMilestonesSelectionData.enter().append("path");
-        taskMilestonesSelectionData.exit().remove();
-        const taskMilestonesSelectionMerged = taskMilestonesSelectionAppend.merge(<any>taskMilestonesSelection);
+
+        // add milestones: for collapsed task may be several milestones of its children, in usual case - just 1 milestone
+        const taskMilestonesSelectionAppend = taskMilestonesSelectionData.enter()
+            .append("path");
+
+        taskMilestonesSelectionData
+            .exit()
+            .remove();
+
+        const taskMilestonesSelectionMerged = taskMilestonesSelectionAppend
+            .merge(<any>taskMilestonesSelection);
 
         if (this.hasNotNullableDates) {
             taskMilestonesSelectionMerged
@@ -3368,14 +3261,14 @@ export class Gantt implements IVisual {
                 .attr("aria-label", (data: MilestonePath) => data.type);
         }
 
-        // Individual milestone tooltips (feature #11)
-        this.tooltipServiceWrapper.addTooltip(
-            taskMilestonesSelectionMerged,
-            (data: MilestonePath) => data.tooltipInfo || [],
-            (_data: MilestonePath) => null
-        );
+        this.renderTooltip(taskMilestonesSelectionMerged);
     }
 
+    /**
+     * Render days off rects
+     * @param taskSelection Task Selection
+     * @param taskConfigHeight Task heights from settings
+     */
     private taskDaysOffRender(
         taskSelection: d3Selection<SVGGElement, Task, SVGGElement | BaseType, Layer>,
         taskConfigHeight: number): void {
@@ -3383,45 +3276,66 @@ export class Gantt implements IVisual {
         const taskDaysOffColor: string = this.formattingSettings.daysOff.fill.value.value;
         const taskDaysOffShow: boolean = this.formattingSettings.daysOff.show.value;
 
-        taskSelection.selectAll(Gantt.TaskDaysOff.selectorName).remove();
+        taskSelection
+            .selectAll(Gantt.TaskDaysOff.selectorName)
+            .remove();
 
         if (taskDaysOffShow) {
             const tasksDaysOff = taskSelection
                 .selectAll<SVGPathElement, TaskDaysOff & { parentTask: Task }>(Gantt.TaskDaysOff.selectorName)
                 .data((d: Task) => {
                     const tasksDaysOff: (TaskDaysOff & { parentTask: Task })[] = [];
+
                     if (!d.children && d.daysOffList) {
                         for (let i = 0; i < d.daysOffList.length; i++) {
                             const currentDaysOffItem: DayOffData = d.daysOffList[i];
                             const startOfLastDay: Date = new Date(+d.end);
                             startOfLastDay.setHours(0, 0, 0);
                             if (currentDaysOffItem[0].getTime() < startOfLastDay.getTime()) {
-                                tasksDaysOff.push({ id: d.index, daysOff: d.daysOffList[i], parentTask: d });
+                                tasksDaysOff.push({
+                                    id: d.index,
+                                    daysOff: d.daysOffList[i],
+                                    parentTask: d
+                                });
                             }
                         }
                     }
+
                     return tasksDaysOff;
                 });
 
-            const tasksDaysOffMerged = tasksDaysOff.enter().append("path").merge(tasksDaysOff);
+            const tasksDaysOffMerged = tasksDaysOff
+                .enter()
+                .append("path")
+                .merge(tasksDaysOff);
+
             tasksDaysOffMerged.classed(Gantt.TaskDaysOff.className, true);
 
             const getTaskRectDaysOffWidth = (task: TaskDaysOff) => {
-                if (!this.hasNotNullableDates) { return 0; }
-                const startDate: Date = task.daysOff[0];
-                const endDate: Date = new Date(startDate.getTime() + (task.daysOff[1] * MillisecondsInADay));
-                return Gantt.taskDurationToWidth(startDate, endDate);
+                let width = 0;
+
+                if (this.hasNotNullableDates) {
+                    const startDate: Date = task.daysOff[0];
+                    const startTime: number = startDate.getTime();
+                    const endDate: Date = new Date(startTime + (task.daysOff[1] * MillisecondsInADay));
+
+                    width = Gantt.taskDurationToWidth(startDate, endDate);
+                }
+
+                return width;
             };
 
             const drawTaskRectDaysOff = (task: TaskDaysOff & { parentTask: Task }) => {
                 const x = this.hasNotNullableDates ? Gantt.TimeScale(task.daysOff[0]) : 0;
-                const y = this.getTaskYCoordinateWithLayer(task.parentTask, taskConfigHeight);
-                const height = Gantt.getBarHeight(taskConfigHeight);
-                const radius = this.formattingSettings.general.barsRoundedCorners.value ? Gantt.RectRound : 0;
-                const width = getTaskRectDaysOffWidth(task);
+                const y: number = this.getTaskYCoordinateWithLayer(task.parentTask, taskConfigHeight),
+                    height: number = Gantt.getBarHeight(taskConfigHeight),
+                    radius: number = this.formattingSettings.general.barsRoundedCorners.value ? Gantt.RectRound : 0,
+                    width: number = getTaskRectDaysOffWidth(task);
+
                 if (this.formattingSettings.general.barsRoundedCorners.value && width >= 2 * radius) {
                     return drawRoundedRectByPath(x, y, width, height, radius);
                 }
+
                 return drawNotRoundedRectByPath(x, y, width, height);
             };
 
@@ -3430,24 +3344,39 @@ export class Gantt implements IVisual {
                 .style("fill", taskDaysOffColor)
                 .attr("width", (task: TaskDaysOff & { parentTask: Task }) => getTaskRectDaysOffWidth(task));
 
-            tasksDaysOff.exit().remove();
+            tasksDaysOff
+                .exit()
+                .remove();
         }
     }
 
+    /**
+     * Render task progress rect
+     * @param taskSelection Task Selection
+     */
     private taskProgressRender(
         taskSelection: d3Selection<SVGGElement, Task, SVGGElement | BaseType, Layer>
     ): void {
         const taskProgressShow: boolean = this.formattingSettings.taskCompletion.show.value;
-        let index = 0, groupedTaskIndex = 0;
 
+        let index = 0, groupedTaskIndex = 0;
         const taskProgress = taskSelection
             .selectAll<SVGLinearGradientElement, { key: string; values: LinearStop[]; }>(Gantt.TaskProgress.selectorName)
             .data((d: Task) => {
                 const taskProgressPercentage = this.getDaysOffTaskProgressPercent(d);
-                if (index === d.index) { groupedTaskIndex++; } else { groupedTaskIndex = 0; index = d.index; }
+                // logic used for grouped tasks, when there are several bars related to one category
+                if (index === d.index) {
+                    groupedTaskIndex++;
+                } else {
+                    groupedTaskIndex = 0;
+                    index = d.index;
+                }
+
                 const url = `${d.index}-${groupedTaskIndex}-${isStringNotNullEmptyOrUndefined(d.taskType) ? d.taskType.toString() : "taskType"}`;
+                const encodedUrl = `task${hashCode(url)}`;
+
                 return [{
-                    key: `task${hashCode(url)}`, values: <LinearStop[]>[
+                    key: encodedUrl, values: <LinearStop[]>[
                         { completion: 0, color: d.color },
                         { completion: taskProgressPercentage, color: d.color },
                         { completion: taskProgressPercentage, color: d.color },
@@ -3456,12 +3385,20 @@ export class Gantt implements IVisual {
                 }];
             });
 
-        const taskProgressMerged = taskProgress.enter().append("linearGradient").merge(taskProgress);
+        const taskProgressMerged = taskProgress
+            .enter()
+            .append("linearGradient")
+            .merge(taskProgress);
+
         taskProgressMerged.classed(Gantt.TaskProgress.className, true);
-        taskProgressMerged.attr("id", (data) => data.key);
+
+        taskProgressMerged
+            .attr("id", (data) => data.key);
 
         const stopsSelection = taskProgressMerged.selectAll("stop");
         const stopsSelectionData = stopsSelection.data(gradient => <LinearStop[]>gradient.values);
+
+        // draw 4 stops: 1st and 2d stops are for completed rect part; 3d and 4th ones -  for main rect
         stopsSelectionData.enter()
             .append("stop")
             .merge(<any>stopsSelection)
@@ -3469,9 +3406,16 @@ export class Gantt implements IVisual {
             .attr("stop-color", (data: LinearStop) => this.colorHelper.getHighContrastColor("foreground", data.color))
             .attr("stop-opacity", (_: LinearStop, index: number) => (index > 1) && taskProgressShow ? Gantt.NotCompletedTaskOpacity : Gantt.TaskOpacity);
 
-        taskProgress.exit().remove();
+        taskProgress
+            .exit()
+            .remove();
     }
 
+    /**
+     * Render task resource labels
+     * @param taskSelection Task Selection
+     * @param taskConfigHeight Task heights from settings
+     */
     private taskResourceRender(
         taskSelection: d3Selection<SVGGElement, Task, SVGGElement | BaseType, Layer>,
         taskConfigHeight: number,
@@ -3481,37 +3425,52 @@ export class Gantt implements IVisual {
         const positionFromObjects: powerbi.DataViewPropertyValue = objects?.taskResource?.position;
 
         let newLabelPosition: ResourceLabelPosition | null = null;
-        if (groupTasks && !this.groupTasksPrevValue && !positionFromObjects) { newLabelPosition = ResourceLabelPosition.Inside; }
-        if (!groupTasks && this.groupTasksPrevValue && !positionFromObjects) { newLabelPosition = ResourceLabelPosition.Right; }
+        if (groupTasks && !this.groupTasksPrevValue && !positionFromObjects) {
+            newLabelPosition = ResourceLabelPosition.Inside;
+        }
+
+        if (!groupTasks && this.groupTasksPrevValue && !positionFromObjects) {
+            newLabelPosition = ResourceLabelPosition.Right;
+        }
 
         const taskResourceSettings: TaskResourceCardSettings = this.formattingSettings.taskResource;
-        if (newLabelPosition) { taskResourceSettings.position.setValue(newLabelPosition); }
+        if (newLabelPosition) {
+            taskResourceSettings.position.setValue(newLabelPosition);
+            newLabelPosition = null;
+        }
 
         this.groupTasksPrevValue = groupTasks;
 
-        const isResourcesFilled = this.viewModel.isResourcesFilled;
-        const taskResourceShow = taskResourceSettings.show.value;
-        const taskResourceFontSize = taskResourceSettings.fontSize.value;
-        const taskResourcePosition = <ResourceLabelPosition>taskResourceSettings.position.value.value;
-        const taskResourceFullText = taskResourceSettings.fullText.value;
-        const taskResourceWidthByTask = taskResourceSettings.widthByTask.value;
-        const isGroupedByTaskName = this.formattingSettings.general.groupTasks.value;
-        const isInsidePosition = [ResourceLabelPosition.Inside, ResourceLabelPosition.InsideCenter, ResourceLabelPosition.InsideRight].includes(taskResourcePosition);
-        const isTopPosition = [ResourceLabelPosition.Top, ResourceLabelPosition.TopCenter, ResourceLabelPosition.TopRight].includes(taskResourcePosition);
+        const isResourcesFilled: boolean = this.viewModel.isResourcesFilled;
+        const taskResourceShow: boolean = taskResourceSettings.show.value;
+        const taskResourceFontSize: number = taskResourceSettings.fontSize.value;
+        const taskResourcePosition: ResourceLabelPosition = <ResourceLabelPosition>taskResourceSettings.position.value.value;
+        const taskResourceFullText: boolean = taskResourceSettings.fullText.value;
+        const taskResourceWidthByTask: boolean = taskResourceSettings.widthByTask.value;
+        const isGroupedByTaskName: boolean = this.formattingSettings.general.groupTasks.value;
+        const isInsidePosition: boolean = [ResourceLabelPosition.Inside, ResourceLabelPosition.InsideCenter, ResourceLabelPosition.InsideRight].includes(taskResourcePosition);
+        const isTopPosition: boolean = [ResourceLabelPosition.Top, ResourceLabelPosition.TopCenter, ResourceLabelPosition.TopRight].includes(taskResourcePosition);
 
-        taskSelection.selectAll(Gantt.TaskResource.selectorName).remove();
+        taskSelection
+            .selectAll(Gantt.TaskResource.selectorName)
+            .remove();
 
         if (isResourcesFilled && taskResourceShow) {
             const taskResource = taskSelection
                 .selectAll<SVGTextElement, Task>(Gantt.TaskResource.selectorName)
                 .data((d: Task) => [d]);
 
-            const taskResourceMerged = taskResource.enter().append("text").merge(taskResource);
+            const taskResourceMerged = taskResource
+                .enter()
+                .append("text")
+                .merge(taskResource);
+
             taskResourceMerged.classed(Gantt.TaskResource.className, true);
 
             taskResourceMerged
                 .attr("x", (task: Task) => this.getResourceLabelXCoordinate(task, taskResourceFontSize, taskResourcePosition))
-                .attr("y", (task: Task) => this.getTaskYCoordinateWithLayer(task, taskConfigHeight) + Gantt.getResourceLabelYOffset(taskConfigHeight, taskResourceFontSize, taskResourcePosition))
+                .attr("y", (task: Task) => this.getTaskYCoordinateWithLayer(task, taskConfigHeight)
+                    + Gantt.getResourceLabelYOffset(taskConfigHeight, taskResourceFontSize, taskResourcePosition))
                 .text((task: Task) => lodashIsEmpty(task.Milestones) && task.resource || "")
                 .style("fill", (task: Task) =>
                     taskResourceSettings.matchLegendColors.value
@@ -3524,51 +3483,68 @@ export class Gantt implements IVisual {
                 .style("text-decoration", taskResourceSettings.underline.value ? "underline" : "none")
                 .style("alignment-baseline", isInsidePosition ? "central" : "auto");
 
-            const hasNotNullableDates = this.hasNotNullableDates;
-            const defaultWidth = Gantt.DefaultValues.ResourceWidth - Gantt.ResourceWidthPadding;
+            const hasNotNullableDates: boolean = this.hasNotNullableDates;
+            const defaultWidth: number = Gantt.DefaultValues.ResourceWidth - Gantt.ResourceWidthPadding;
 
             if (taskResourceWidthByTask) {
-                taskResourceMerged.each(function (task: Task) {
-                    const width = hasNotNullableDates ? Gantt.taskDurationToWidth(task.start, task.end) : 0;
-                    AxisHelper.LabelLayoutStrategy.clip(d3Select(this), width - Gantt.RectRound * 2, textMeasurementService.svgEllipsis);
-                });
+                taskResourceMerged
+                    .each(function (task: Task) {
+                        const width: number = hasNotNullableDates ? Gantt.taskDurationToWidth(task.start, task.end) : 0;
+                        AxisHelper.LabelLayoutStrategy.clip(d3Select(this), width - Gantt.RectRound * 2, textMeasurementService.svgEllipsis);
+                    });
             } else if (isGroupedByTaskName) {
-                taskResourceMerged.each(function (task: Task, outerIndex: number) {
-                    const sameRowNextTaskStart = Gantt.getSameRowNextTaskStartDate(task, outerIndex, taskResourceMerged);
-                    if (sameRowNextTaskStart) {
-                        let width = 0;
-                        if (hasNotNullableDates) {
-                            const startDate = isTopPosition ? task.start : task.end;
-                            width = Gantt.taskDurationToWidth(startDate, sameRowNextTaskStart);
+                taskResourceMerged
+                    .each(function (task: Task, outerIndex: number) {
+                        const sameRowNextTaskStart: Date = Gantt.getSameRowNextTaskStartDate(task, outerIndex, taskResourceMerged);
+
+                        if (sameRowNextTaskStart) {
+                            let width: number = 0;
+                            if (hasNotNullableDates) {
+                                const startDate: Date = isTopPosition ? task.start : task.end;
+                                width = Gantt.taskDurationToWidth(startDate, sameRowNextTaskStart);
+                            }
+
+                            AxisHelper.LabelLayoutStrategy.clip(d3Select(this), width, textMeasurementService.svgEllipsis);
+                        } else {
+                            if (!taskResourceFullText) {
+                                AxisHelper.LabelLayoutStrategy.clip(d3Select(this), defaultWidth, textMeasurementService.svgEllipsis);
+                            }
                         }
-                        AxisHelper.LabelLayoutStrategy.clip(d3Select(this), width, textMeasurementService.svgEllipsis);
-                    } else {
-                        if (!taskResourceFullText) {
-                            AxisHelper.LabelLayoutStrategy.clip(d3Select(this), defaultWidth, textMeasurementService.svgEllipsis);
-                        }
-                    }
-                });
+                    });
             } else if (!taskResourceFullText) {
-                taskResourceMerged.each(function () {
-                    AxisHelper.LabelLayoutStrategy.clip(d3Select(this), defaultWidth, textMeasurementService.svgEllipsis);
-                });
+                taskResourceMerged
+                    .each(function () {
+                        AxisHelper.LabelLayoutStrategy.clip(d3Select(this), defaultWidth, textMeasurementService.svgEllipsis);
+                    });
             }
 
-            taskResource.exit().remove();
+            taskResource
+                .exit()
+                .remove();
         }
     }
 
     private static getSameRowNextTaskStartDate(task: Task, index: number, selection: d3Selection<SVGTextElement, Task, SVGGElement, Task>) {
         let sameRowNextTaskStart: Date;
-        selection.each(function (x: Task, i: number) {
-            if (index !== i && x.index === task.index && x.start >= task.start && (!sameRowNextTaskStart || sameRowNextTaskStart < x.start)) {
-                sameRowNextTaskStart = x.start;
-            }
-        });
+
+        selection
+            .each(function (x: Task, i: number) {
+                if (index !== i &&
+                    x.index === task.index &&
+                    x.start >= task.start &&
+                    (!sameRowNextTaskStart || sameRowNextTaskStart < x.start)) {
+
+                    sameRowNextTaskStart = x.start;
+                }
+            });
+
         return sameRowNextTaskStart;
     }
 
-    private static getResourceLabelYOffset(taskConfigHeight: number, taskResourceFontSize: number, taskResourcePosition: ResourceLabelPosition): number {
+    private static getResourceLabelYOffset(
+        taskConfigHeight: number,
+        taskResourceFontSize: number,
+        taskResourcePosition: ResourceLabelPosition): number {
         const barHeight: number = Gantt.getBarHeight(taskConfigHeight);
         switch (taskResourcePosition) {
             case ResourceLabelPosition.Right:
@@ -3584,12 +3560,18 @@ export class Gantt implements IVisual {
         }
     }
 
-    private getResourceLabelXCoordinate(task: Task, taskResourceFontSize: number, taskResourcePosition: ResourceLabelPosition): number {
-        if (!this.hasNotNullableDates) { return 0; }
+    private getResourceLabelXCoordinate(
+        task: Task,
+        taskResourceFontSize: number,
+        taskResourcePosition: ResourceLabelPosition): number {
+        if (!this.hasNotNullableDates) {
+            return 0;
+        }
+
         const width = this.getTaskRectWidth(task);
-        const xStart = Gantt.TimeScale(task.start) || 0;
-        const xEnd = Gantt.TimeScale(task.end) || 0;
-        const textWidth = textMeasurementService.measureSvgTextWidth({
+        const xStart: number = Gantt.TimeScale(task.start) || 0;
+        const xEnd: number = Gantt.TimeScale(task.end) || 0;
+        const textWidth: number = textMeasurementService.measureSvgTextWidth({
             text: task.resource || "",
             fontFamily: this.formattingSettings.taskResource.fontFamily.value,
             fontSize: PixelConverter.fromPoint(taskResourceFontSize),
@@ -3598,31 +3580,48 @@ export class Gantt implements IVisual {
         });
 
         switch (taskResourcePosition) {
-            case ResourceLabelPosition.Right: return Gantt.RectRound + xEnd;
+            case ResourceLabelPosition.Right:
+                return Gantt.RectRound + xEnd;
             case ResourceLabelPosition.Inside:
-            case ResourceLabelPosition.Top: return xStart + Gantt.RectRound;
+            case ResourceLabelPosition.Top: {
+                return xStart + Gantt.RectRound;
+            }
             case ResourceLabelPosition.InsideCenter:
             case ResourceLabelPosition.TopCenter: {
-                const result = xStart + (width - textWidth) / 2;
-                return result < xStart + Gantt.RectRound ? xStart + Gantt.RectRound : result;
+                const result: number = xStart + (width - textWidth) / 2;
+                if (result < xStart + Gantt.RectRound) {
+                    return xStart + Gantt.RectRound;
+                }
+                return result;
             }
             case ResourceLabelPosition.InsideRight:
             case ResourceLabelPosition.TopRight: {
-                const result = xEnd - textWidth - Gantt.RectRound;
-                return result < xStart + Gantt.RectRound ? xStart + Gantt.RectRound : result;
+                const result: number = xEnd - textWidth - Gantt.RectRound;
+                if (result < xStart + Gantt.RectRound) {
+                    return xStart + Gantt.RectRound;
+                }
+                return result;
             }
         }
     }
 
+    /**
+     * Returns the matching Y coordinate for a given task index
+     * @param taskIndex Task Number
+     */
     private getTaskLabelCoordinateY(taskIndex: number): number {
         const settings = this.formattingSettings;
-        const fontSize = +settings.taskLabels.taskLabelsGroup.general.fontSize.value;
+        const fontSize: number = + settings.taskLabels.taskLabelsGroup.general.fontSize.value;
         const taskConfigHeight = settings.taskConfig.height.value || DefaultChartLineHeight;
         const taskYCoordinate = taskConfigHeight * taskIndex;
         const barHeight = Gantt.getBarHeight(taskConfigHeight);
         return taskYCoordinate + (barHeight + Gantt.BarHeightMargin - (taskConfigHeight - fontSize) / Gantt.ChartLineHeightDivider);
     }
 
+    /**
+    * Get completion percent when days off feature is on
+    * @param task All task attributes
+    */
     private getDaysOffTaskProgressPercent(task: Task) {
         if (this.formattingSettings.daysOff.show.value) {
             if (task.daysOffList && task.daysOffList.length && task.duration && task.completion) {
@@ -3630,29 +3629,79 @@ export class Gantt implements IVisual {
                 if (task.wasDowngradeDurationUnit) {
                     durationUnit = DurationHelper.downgradeDurationUnit(durationUnit, task.duration);
                 }
-                const startTime = task.start.getTime();
-                const progressLength = (task.end.getTime() - startTime) * task.completion;
-                const currentProgressTime = new Date(startTime + progressLength).getTime();
+                const startTime: number = task.start.getTime();
+                const progressLength: number = (task.end.getTime() - startTime) * task.completion;
+                const currentProgressTime: number = new Date(startTime + progressLength).getTime();
 
-                const daysOffFiltered = task.daysOffList.filter(date => startTime <= date[0].getTime() && date[0].getTime() <= currentProgressTime);
-                const extraDuration = Gantt.calculateExtraDurationDaysOff(daysOffFiltered, task.end, task.start, +this.formattingSettings.daysOff.firstDayOfWeek.value.value, durationUnit);
-                return task.completion + extraDuration / task.duration;
+                const daysOffFiltered: DayOffData[] = task.daysOffList
+                    .filter((date) => startTime <= date[0].getTime() && date[0].getTime() <= currentProgressTime);
+
+                const extraDuration: number = Gantt.calculateExtraDurationDaysOff(daysOffFiltered, task.end, task.start, +this.formattingSettings.daysOff.firstDayOfWeek.value.value, durationUnit);
+                const extraDurationPercentage = extraDuration / task.duration;
+                return task.completion + extraDurationPercentage;
             }
         }
+
         return task.completion;
     }
 
-    // =========================================================================
-    // MILESTONE LINE
-    // =========================================================================
+    /**
+    * Get bar y coordinate
+    * @param lineNumber Line number that represents the task number
+    * @param lineHeight Height of task line
+    */
+    private static getBarYCoordinate(
+        lineNumber: number,
+        lineHeight: number): number {
+        return (lineHeight * lineNumber) + PaddingTasks;
+    }
+
+    /**
+     * Get bar height
+     * @param lineHeight The height of line
+     */
+    private static getBarHeight(lineHeight: number): number {
+        return lineHeight / Gantt.ChartLineProportion;
+    }
+
+    /**
+     * Get the margin that added to task rects and task category labels
+     *
+     * depends on resource label position and resource label font size
+     */
+    private getResourceLabelTopMargin(): number {
+        const isResourcesFilled: boolean = this.viewModel.isResourcesFilled;
+        const taskResourceSettings: TaskResourceCardSettings = this.formattingSettings.taskResource;
+        const taskResourceShow: boolean = taskResourceSettings.show.value;
+        const taskResourceFontSize: number = taskResourceSettings.fontSize.value;
+        const taskResourcePosition: ResourceLabelPosition = <ResourceLabelPosition>taskResourceSettings.position.value.value;
+        const isTopPosition: boolean = [ResourceLabelPosition.Top, ResourceLabelPosition.TopCenter, ResourceLabelPosition.TopRight].includes(taskResourcePosition);
+
+        let margin: number = 0;
+        if (isResourcesFilled && taskResourceShow && isTopPosition) {
+            margin = Number(taskResourceFontSize) + Gantt.LabelTopOffsetForPadding;
+        }
+
+        return margin;
+    }
+
+    /**
+     * convert task duration to width in the timescale
+     * @param start The start of task to convert
+     * @param end The end of task to convert
+     */
+    private static taskDurationToWidth(
+        start: Date,
+        end: Date): number {
+        return Gantt.TimeScale(end) - Gantt.TimeScale(start);
+    }
 
     private getTooltipForMilestoneLine(
         formattedDate: string,
         dateTypeSettings: DateTypeCardSettings,
-        milestoneTitle: string[] | LabelForDate[],
-        milestoneCategoryName?: string[]): VisualTooltipDataItem[] {
-
+        milestoneTitle: string[] | LabelForDate[], milestoneCategoryName?: string[]): VisualTooltipDataItem[] {
         const result: VisualTooltipDataItem[] = [];
+
         for (let i = 0; i < milestoneTitle.length; i++) {
             if (!milestoneTitle[i]) {
                 switch (dateTypeSettings.type.value.value) {
@@ -3665,25 +3714,45 @@ export class Gantt implements IVisual {
                         milestoneTitle[i] = this.localizationManager.getDisplayName("Visual_Label_Today");
                 }
             }
+
             if (milestoneCategoryName) {
-                result.push({ displayName: this.localizationManager.getDisplayName("Visual_Milestone_Name"), value: milestoneCategoryName[i] });
+                result.push({
+                    displayName: this.localizationManager.getDisplayName("Visual_Milestone_Name"),
+                    value: milestoneCategoryName[i]
+                });
             }
-            result.push({ displayName: <string>milestoneTitle[i], value: formattedDate });
+
+            result.push({
+                displayName: <string>milestoneTitle[i],
+                value: formattedDate
+            });
         }
+
         return result;
     }
 
-    private createMilestoneLine(tasks: GroupedTask[], timestamp: number = Date.now(), milestoneTitle?: string): void {
-        if (!this.hasNotNullableDates) { return; }
+    /**
+    * Create vertical dotted line that represent milestone in the time axis (by default it shows not time)
+    * @param tasks All tasks array
+    * @param milestoneTitle
+    * @param timestamp the milestone to be shown in the time axis (default Date.now())
+    */
+    private createMilestoneLine(
+        tasks: GroupedTask[],
+        timestamp: number = Date.now(),
+        milestoneTitle?: string): void {
+        if (!this.hasNotNullableDates) {
+            return;
+        }
 
         const dateTypeSettings: DateTypeCardSettings = this.formattingSettings.dateType;
         const todayColor: string = dateTypeSettings.todayColor.value.value;
         const milestoneDates = [new Date(timestamp)];
-
         tasks.forEach((task: GroupedTask) => {
-            task.tasks.forEach((t: Task) => {
-                if (!lodashIsEmpty(t.Milestones)) {
-                    t.Milestones.forEach(milestone => {
+            const subtasks: Task[] = task.tasks;
+            subtasks.forEach((task: Task) => {
+                if (!lodashIsEmpty(task.Milestones)) {
+                    task.Milestones.forEach((milestone) => {
                         if (!milestoneDates.includes(milestone.start)) {
                             milestoneDates.push(milestone.start);
                         }
@@ -3700,62 +3769,85 @@ export class Gantt implements IVisual {
         const line: Line[] = [];
         milestoneDates.forEach((date: Date) => {
             const title = date === Gantt.TimeScale(timestamp) ? milestoneTitle : "Milestone";
-            line.push({
-                x1: Gantt.TimeScale(date), y1: Gantt.MilestoneTop,
-                x2: Gantt.TimeScale(date), y2: this.getMilestoneLineLength(tasksTotal),
+            const lineOptions = {
+                x1: Gantt.TimeScale(date),
+                y1: Gantt.MilestoneTop,
+                x2: Gantt.TimeScale(date),
+                y2: this.getMilestoneLineLength(tasksTotal),
                 tooltipInfo: this.getTooltipForMilestoneLine(date.toLocaleDateString(), dateTypeSettings, [title])
-            });
+            };
+            line.push(lineOptions);
         });
-
         this.renderMilestoneDottedLines(line, timestamp, todayColor);
     }
 
     private renderMilestoneDottedLines(line: Line[], timestamp: number, todayColor: string) {
         const lineSettings: LineContainerItem = this.formattingSettings.milestones.lineGroup;
         const shouldRenderTodayLine: boolean = this.formattingSettings.dateType.showTodayLine.value;
-
         if (lineSettings.showLines.value) {
             const chartLineSelection = this.chartGroup
                 .selectAll<SVGLineElement, Line>(Gantt.ChartLine.selectorName)
                 .data(line);
 
-            const chartLineSelectionMerged = chartLineSelection.enter().append("line").merge(chartLineSelection);
-            chartLineSelectionMerged.classed(Gantt.ChartLine.className, true);
+            const chartLineSelectionMerged = chartLineSelection
+                .enter()
+                .append("line")
+                .merge(chartLineSelection);
+
+            chartLineSelectionMerged.classed(Gantt.ChartLine.className, true)
+
 
             chartLineSelectionMerged
-                .attr("x1", (l: Line) => l.x1).attr("y1", (l: Line) => l.y1)
-                .attr("x2", (l: Line) => l.x2).attr("y2", (l: Line) => l.y2)
-                .style("stroke", (l: Line) => {
-                    const color = l.x1 === Gantt.TimeScale(timestamp) ? todayColor : lineSettings.lineColor.value.value;
+                .attr("x1", (line: Line) => line.x1)
+                .attr("y1", (line: Line) => line.y1)
+                .attr("x2", (line: Line) => line.x2)
+                .attr("y2", (line: Line) => line.y2)
+                .style("stroke", (line: Line) => {
+                    const color: string = line.x1 === Gantt.TimeScale(timestamp) ? todayColor : lineSettings.lineColor.value.value;
                     return this.colorHelper.getHighContrastColor("foreground", color);
                 })
                 .style("stroke-opacity", lineSettings.lineOpacity.value / 100)
-                .style("display", (l: Line) => {
-                    if (l.x1 === Gantt.TimeScale(timestamp) && !shouldRenderTodayLine) { return "none"; }
-                    return "block";
+                .style("display", (line: Line) => {
+                    if (line.x1 == Gantt.TimeScale(timestamp) && !shouldRenderTodayLine) {
+                        return "none";
+                    } else {
+                        return "block";
+                    }
                 });
 
             switch (<MilestoneLineType>lineSettings.lineType.value.value) {
                 case MilestoneLineType.Solid:
-                    chartLineSelectionMerged.style("stroke-dasharray", "none");
+                    chartLineSelectionMerged.style("stroke-dasharray", "none")
                     break;
+                case MilestoneLineType.Dotted:
                 default:
-                    chartLineSelectionMerged.style("stroke-dasharray", "3,3");
+                    chartLineSelectionMerged.style("stroke-dasharray", "3,3")
                     break;
             }
 
             this.renderTooltip(chartLineSelectionMerged);
-            chartLineSelection.exit().remove();
+
+            chartLineSelection
+                .exit()
+                .remove();
         } else {
-            this.chartGroup.selectAll(Gantt.ChartLine.selectorName).remove();
+            this.chartGroup
+                .selectAll(Gantt.ChartLine.selectorName)
+                .remove();
         }
     }
 
-    private scrollToMilestoneLine(axisLength: number, timestamp: number = Date.now()): void {
+    private scrollToMilestoneLine(axisLength: number,
+        timestamp: number = Date.now()): void {
+
         let scrollValue = Gantt.TimeScale(new Date(timestamp));
-        scrollValue -= scrollValue > ScrollMargin ? ScrollMargin : 0;
+        scrollValue -= scrollValue > ScrollMargin
+            ? ScrollMargin
+            : 0;
+
         if (axisLength > scrollValue) {
-            this.body.node().querySelector(Gantt.Body.selectorName).scrollLeft = scrollValue;
+            this.body.node()
+                .querySelector(Gantt.Body.selectorName).scrollLeft = scrollValue;
         }
     }
 
@@ -3766,181 +3858,42 @@ export class Gantt implements IVisual {
             (task: Task) => task.identity);
     }
 
-    // =========================================================================
-    // ELEMENT POSITIONS
-    // =========================================================================
-
     private updateElementsPositions(margin: IMargin): void {
         const taskSettings: TaskLabelsCardSettings = this.formattingSettings.taskLabels;
         const taskLabelShow: boolean = taskSettings.show.value;
         const taskLabelsWidth: number = taskLabelShow
-            ? taskSettings.taskLabelsGroup.general.width.value + this.dataGridExtraWidth
+            ? taskSettings.taskLabelsGroup.general.width.value
             : 0;
 
         const translateX: number = taskLabelsWidth + margin.left + Gantt.SubtasksLeftMargin;
-        const shiftX: number = !taskLabelShow && this.viewModel.isParentFilled ? Gantt.GroupLabelSize : 0;
+        const shiftX: number = !taskLabelShow && this.viewModel.isParentFilled
+            ? Gantt.GroupLabelSize
+            : 0;
 
         this.chartGroup.attr("transform", SVGManipulations.translate(translateX + shiftX, margin.top));
 
         const ganttDiv = this.ganttDiv.node();
         const translateY: number = Gantt.TaskLabelsMarginTop + ganttDiv.scrollTop;
 
-        this.axisGroup.attr("transform", SVGManipulations.translate(translateX + shiftX, translateY));
-        this.collapseAllGroup.attr("transform", SVGManipulations.translate(ganttDiv.scrollLeft, ganttDiv.scrollTop));
-        this.lineGroup.attr("transform", SVGManipulations.translate(ganttDiv.scrollLeft, 0));
-
-        // Zoom controls follow axis
-        this.zoomControlGroup.attr("transform", SVGManipulations.translate(translateX + shiftX, translateY - 22));
-    }
-
-    // =========================================================================
-    // SVG BACKGROUND
-    // =========================================================================
-
-    private updateSvgBackgroundColor(): void {
-        const background = this.formattingSettings.background.general;
-        this.ganttSvgBackground
-            .attr("fill", background.enable.value ? background.color.value.value : "none")
-            .attr("fill-opacity", !isNaN(background.opacity.value) ? background.opacity.value / 100 : 1);
-    }
-
-    // =========================================================================
-    // COLLAPSE / EXPAND
-    // =========================================================================
-
-    private subTasksCollapseCb(taskClicked: GroupedTask): void {
-        const taskIsChild = taskClicked.tasks[0].parent && !taskClicked.tasks[0].children;
-        const taskWithoutParentAndChildren = !taskClicked.tasks[0].parent && !taskClicked.tasks[0].children;
-        if (taskIsChild || taskWithoutParentAndChildren) { return; }
-
-        const taskClickedParent = taskClicked.tasks[0].parent || taskClicked.tasks[0].name;
-        this.viewModel.tasks.forEach((task: Task) => {
-            if (task.parent === taskClickedParent && task.parent.length >= taskClickedParent.length) {
-                const index = this.collapsedTasks.indexOf(task.parent);
-                if (task.visibility) { this.collapsedTasks.push(task.parent); }
-                else { if (taskClickedParent === task.parent) { this.collapsedTasks.splice(index, 1); } }
-            }
-        });
-
-        const newId = crypto.randomUUID();
-        this.collapsedTasksUpdateIDs.push(newId);
-        this.setJsonFiltersValues(this.collapsedTasks, newId);
-    }
-
-    private subTasksCollapseAll(): void {
-        const collapsedAllSelector = this.collapseAllGroup.select(Gantt.CollapseAllArrow.selectorName);
-        const isCollapsed = collapsedAllSelector.attr(this.collapseAllFlag);
-        const buttonExpandCollapseColor = this.colorHelper.getHighContrastColor("foreground", Gantt.DefaultValues.CollapseAllColor);
-
-        collapsedAllSelector.selectAll("path").remove();
-        if (isCollapsed === "1") {
-            this.collapsedTasks = [];
-            collapsedAllSelector.attr(this.collapseAllFlag, "0");
-            drawCollapseButton(collapsedAllSelector, buttonExpandCollapseColor);
-        } else {
-            collapsedAllSelector.attr(this.collapseAllFlag, "1");
-            drawExpandButton(collapsedAllSelector, buttonExpandCollapseColor);
-            this.viewModel.tasks.forEach((task: Task) => {
-                if (task.parent && task.visibility) { this.collapsedTasks.push(task.parent); }
-            });
-        }
-
-        const newId = crypto.randomUUID();
-        this.collapsedTasksUpdateIDs.push(newId);
-        this.setJsonFiltersValues(this.collapsedTasks, newId);
-    }
-
-    private setJsonFiltersValues(collapsedValues: string[], collapsedTasksUpdateId: string) {
-        this.host.persistProperties(<VisualObjectInstancesToPersist>{
-            merge: [{
-                objectName: "collapsedTasks", selector: null,
-                properties: { list: JSON.stringify(collapsedValues) }
-            }, {
-                objectName: "collapsedTasksUpdateId", selector: null,
-                properties: { value: JSON.stringify(collapsedTasksUpdateId) }
-            }]
-        });
-    }
-
-    // =========================================================================
-    // BIND BEHAVIOR
-    // =========================================================================
-
-    private bindBehaviorOptions(tasks: Task[]): void {
-        const legendItemsSelection: d3Selection<SVGGElement, LegendDataPoint, any, any> = this.body.selectAll(Gantt.LegendItems.selectorName);
-        const legendDataPoints = legendItemsSelection.data();
-
-        const behaviorOptions: BehaviorOptions = {
-            dataPoints: tasks,
-            legendDataPoints: legendDataPoints,
-            hasHighlights: this.hasHighlights,
-            clearCatcher: this.body,
-            taskSelection: this.taskGroup.selectAll(Gantt.SingleTask.selectorName),
-            legendSelection: legendItemsSelection,
-            subTasksCollapse: {
-                selection: this.body.selectAll(Gantt.ClickableArea.selectorName),
-                callback: this.subTasksCollapseCb.bind(this)
-            },
-            allSubTasksCollapse: {
-                selection: this.body.select(Gantt.CollapseAll.selectorName),
-                arrowSelection: this.body.select(Gantt.CollapseAll.selectorName).select(Gantt.CollapseAllArrow.selectorName),
-                callback: this.subTasksCollapseAll.bind(this)
-            },
-        };
-
-        this.behavior.bindEvents(behaviorOptions);
-        this.behavior.renderSelection(this.hasHighlights);
-
-        // ── Row selection highlight (feature #9) ─────────────────────────────
-        this.applyRowSelectionHighlight(tasks);
-    }
-
-    private applyRowSelectionHighlight(tasks: Task[]): void {
-        const selectionRowColor = (this.formattingSettings.taskConfig as any).selectionRowColor?.value?.value || "#E8F4FE";
-
-        this.lineGroup.selectAll<SVGRectElement, GroupedTask>(`.${Gantt.RowSelectionBg.className}`)
-            .style("fill", function () {
-                const groupedTask: GroupedTask = d3Select(this.parentNode.parentNode).datum() as GroupedTask;
-                if (!groupedTask) { return "transparent"; }
-                const isSelected = groupedTask.tasks.some(t => t.selected);
-                return isSelected ? selectionRowColor : "transparent";
-            });
-    }
-
-    // =========================================================================
-    // STATIC DATE HELPERS
-    // =========================================================================
-
-    private static getDateType(dateType: DateType): number {
-        switch (dateType) {
-            case DateType.Second: return MillisecondsInASecond;
-            case DateType.Minute: return MillisecondsInAMinute;
-            case DateType.Hour: return MillisecondsInAHour;
-            case DateType.Day: return MillisecondsInADay;
-            case DateType.Week: return MillisecondsInWeek;
-            case DateType.Month: return MillisecondsInAMonth;
-            case DateType.Quarter: return MillisecondsInAQuarter;
-            case DateType.Year: return MillisecondsInAYear;
-            default: return MillisecondsInWeek;
-        }
+        this.axisGroup
+            .attr("transform", SVGManipulations.translate(translateX + shiftX, translateY));
+        this.collapseAllGroup
+            .attr("transform", SVGManipulations.translate(ganttDiv.scrollLeft, ganttDiv.scrollTop));
+        this.lineGroup
+            .attr("transform", SVGManipulations.translate(ganttDiv.scrollLeft, 0));
     }
 
     private getMilestoneLineLength(numOfTasks: number): number {
         return numOfTasks * ((this.formattingSettings.taskConfig.height.value || DefaultChartLineHeight) + (1 + numOfTasks) * this.getResourceLabelTopMargin() / 2);
     }
 
-    // =========================================================================
-    // PUBLIC STATIC UTILITIES
-    // =========================================================================
-
     public static downgradeDurationUnitIfNeeded(tasks: Task[], durationUnit: DurationUnit) {
         const downgradedDurationUnitTasks = tasks.filter(t => t.wasDowngradeDurationUnit);
+
         if (downgradedDurationUnitTasks.length) {
-            let maxStepDurationTransformation = 0;
-            downgradedDurationUnitTasks.forEach(x => {
-                maxStepDurationTransformation = x.stepDurationTransformation > maxStepDurationTransformation
-                    ? x.stepDurationTransformation : maxStepDurationTransformation;
-            });
+            let maxStepDurationTransformation: number = 0;
+            downgradedDurationUnitTasks.forEach(x => maxStepDurationTransformation = x.stepDurationTransformation > maxStepDurationTransformation ? x.stepDurationTransformation : maxStepDurationTransformation);
+
             tasks.filter(x => x.stepDurationTransformation !== maxStepDurationTransformation).forEach(task => {
                 task.duration = DurationHelper.transformDuration(task.duration, durationUnit, maxStepDurationTransformation);
                 task.stepDurationTransformation = maxStepDurationTransformation;
